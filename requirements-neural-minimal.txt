@@ -1,0 +1,21 @@
+# حداقل پکیج‌های لازم برای پردازش عکس و PDF
+
+# PyTorch (CPU only - سبک‌تر)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer Vision
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# PDF Processing  
+PyMuPDF>=1.23.0
+
+# ONNX Runtime (برای MiDaS)
+onnxruntime>=1.16.0
+
+# Object Detection
+ultralytics>=8.0.0
+
+# Utilities
+tqdm>=4.66.0
