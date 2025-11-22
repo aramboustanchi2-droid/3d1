@@ -1,0 +1,70 @@
+{
+  "timestamp": "2025-11-21T01:23:53.279696Z",
+  "save_result": "ALL SYSTEMS SAVED SUCCESSFULLY.",
+  "council_save_results": {
+    "Central_Agent_Command": "ok",
+    "Analysis": "ok",
+    "Ideation": "ok",
+    "Computational": "ok",
+    "Economic": "ok",
+    "Decision": "ok",
+    "Leadership": "ok"
+  },
+  "geometry_realism": true,
+  "feasibility_realism": true,
+  "governance_state": {
+    "system_frozen": false,
+    "core_shutdown": false,
+    "architect_locked": false
+  },
+  "feasibility_test_available": false,
+  "feasibility_test_summary": null,
+  "maintenance_health": {
+    "agents": 7,
+    "issues_detected": 0,
+    "avg_health": 100.0
+  },
+  "artifacts": {
+    "super_ai_councils_state.json": {
+      "exists": true,
+      "size": 2284
+    },
+    "cad3d/super_ai/super_ai_knowledge_base.json": {
+      "exists": true,
+      "size": 3383
+    },
+    "council_central_agent_command_state.json": {
+      "exists": true,
+      "size": 306
+    },
+    "council_analysis_state.json": {
+      "exists": true,
+      "size": 293
+    },
+    "council_ideation_state.json": {
+      "exists": true,
+      "size": 293
+    },
+    "council_computational_state.json": {
+      "exists": true,
+      "size": 298
+    },
+    "council_economic_state.json": {
+      "exists": true,
+      "size": 293
+    },
+    "council_decision_state.json": {
+      "exists": true,
+      "size": 293
+    },
+    "council_leadership_state.json": {
+      "exists": true,
+      "size": 295
+    }
+  },
+  "notes": {
+    "geometry_realism_requires_dxf": "DXF upload triggers polygon extraction path in app.py.",
+    "governance_enforced": "Requests are blocked if frozen or shutdown.",
+    "feasibility_pipeline_auto": "Runs when geometric context is present even if wording absent."
+  }
+}

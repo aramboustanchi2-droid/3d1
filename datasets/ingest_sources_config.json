@@ -1,0 +1,70 @@
+{
+    "rate_limit_seconds": 3,
+    "sources": [
+        {
+            "name": "archline",
+            "base_url": "https://archline.ir",
+            "allowed": true,
+            "type": "projects",
+            "depth": 1
+        },
+        {
+            "name": "arel",
+            "base_url": "https://areal.ir",
+            "allowed": true,
+            "type": "architecture",
+            "depth": 1
+        },
+        {
+            "name": "khatememar",
+            "base_url": "https://khatememar.com",
+            "allowed": true,
+            "type": "case-study",
+            "depth": 1
+        },
+        {
+            "name": "civil808",
+            "base_url": "https://civil808.com",
+            "allowed": true,
+            "type": "articles",
+            "depth": 1
+        },
+        {
+            "name": "iran_saze_forum",
+            "base_url": "https://iransaze.com",
+            "allowed": true,
+            "type": "forum",
+            "depth": 0
+        },
+        {
+            "name": "urbanity",
+            "base_url": "https://urbanity.ir",
+            "allowed": true,
+            "type": "urban",
+            "depth": 1
+        },
+        {
+            "name": "design_plus",
+            "base_url": "https://designplus.co",
+            "allowed": true,
+            "type": "architecture",
+            "depth": 1
+        },
+        {
+            "name": "bhrc",
+            "base_url": "https://www.bhrc.ac.ir",
+            "allowed": false,
+            "type": "standards",
+            "depth": 0,
+            "only_metadata": true
+        },
+        {
+            "name": "inbr",
+            "base_url": "https://inbr.ir",
+            "allowed": false,
+            "type": "national_codes",
+            "depth": 0,
+            "only_metadata": true
+        }
+    ]
+}

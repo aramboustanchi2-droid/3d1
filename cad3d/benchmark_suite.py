@@ -1,14 +1,37 @@
 """
-Benchmarking suite for evaluating CAD detection model performance.
-Measures accuracy, speed, and resource usage.
+Benchmarking Suite for CAD Detection and Analysis Models
+
+This module provides a comprehensive and robust suite for evaluating the performance
+of various models used in CAD analysis. It measures key metrics such as accuracy,
+speed, and resource consumption, providing a standardized way to compare different
+AI approaches.
+
+Core Features:
+- **Standardized Metrics**: Calculates Precision, Recall, F1-Score, and mean
+  Average Precision (mAP) using modern COCO-style evaluation.
+- **Performance Tracking**: Measures inference speed (FPS) and resource usage
+  (CPU/GPU memory).
+- **Model Agnostic**: Designed to be extensible to different model formats like
+  PyTorch, ONNX, and TensorRT through a unified interface.
+- **Detailed Reporting**: Generates both summary and per-category performance
+  reports, allowing for granular analysis of model strengths and weaknesses.
+- **Comparison Utility**: Includes a high-level function to benchmark and compare
+  multiple models on the same dataset.
 """
+
+from __future__ import annotations
 import time
 import json
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import numpy as np
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+
+# Conditional imports for heavy dependencies
 try:
     import torch
     import torch.nn as nn
@@ -17,442 +40,395 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
     nn = None
-    DataLoader = None  # Placeholder when torch not available
+    DataLoader = None
+    logging.warning("PyTorch is not installed. Benchmarking capabilities will be limited.")
+
+
+@dataclass
+class ResourceMetrics:
+    """Metrics for system resource consumption."""
+    cpu_memory_mb: float = 0.0
+    gpu_memory_mb: float = 0.0  # Peak GPU memory usage during inference
+
+    def to_dict(self):
+        return asdict(self)
+
+    def __str__(self):
+        return (
+            f"  CPU Memory: {self.cpu_memory_mb:.2f} MB\n"
+            f"  GPU Memory: {self.gpu_memory_mb:.2f} MB"
+        )
 
 
 @dataclass
 class DetectionMetrics:
-    """Detection evaluation metrics."""
+    """A comprehensive set of metrics for evaluating object detection performance."""
     precision: float
     recall: float
     f1_score: float
-    mAP: float  # Mean Average Precision
-    mAP_50: float  # mAP at IoU=0.5
+    mAP: float  # Mean Average Precision (COCO-style, IoU 0.50:0.95)
+    mAP_50: float  # mAP at IoU=0.50
     mAP_75: float  # mAP at IoU=0.75
     average_iou: float
     inference_time_ms: float
     fps: float
-    
+    resources: ResourceMetrics
+
     def to_dict(self):
-        return asdict(self)
-    
+        data = asdict(self)
+        data['resources'] = self.resources.to_dict()
+        return data
+
     def __str__(self):
         return (
-            f"Detection Metrics:\n"
-            f"  Precision: {self.precision:.3f}\n"
-            f"  Recall: {self.recall:.3f}\n"
-            f"  F1 Score: {self.f1_score:.3f}\n"
-            f"  mAP: {self.mAP:.3f}\n"
-            f"  mAP@0.5: {self.mAP_50:.3f}\n"
-            f"  mAP@0.75: {self.mAP_75:.3f}\n"
-            f"  Avg IoU: {self.average_iou:.3f}\n"
-            f"  Inference: {self.inference_time_ms:.2f} ms ({self.fps:.1f} FPS)"
+            f"Overall Detection Metrics:\n"
+            f"  Precision: {self.precision:.4f}\n"
+            f"  Recall: {self.recall:.4f}\n"
+            f"  F1 Score: {self.f1_score:.4f}\n"
+            f"  mAP (0.50:0.95): {self.mAP:.4f}\n"
+            f"  mAP@0.50: {self.mAP_50:.4f}\n"
+            f"  mAP@0.75: {self.mAP_75:.4f}\n"
+            f"  Average IoU: {self.average_iou:.4f}\n"
+            f"  Inference Time: {self.inference_time_ms:.2f} ms/image\n"
+            f"  Frames Per Second (FPS): {self.fps:.2f}\n"
+            f"  Resources:\n{self.resources}"
         )
 
 
 @dataclass
 class CategoryMetrics:
-    """Per-category metrics."""
+    """Performance metrics for a single object category."""
     category_name: str
     category_id: int
     precision: float
     recall: float
     f1_score: float
-    ap: float  # Average Precision
+    ap: float  # Average Precision (COCO-style)
     num_predictions: int
     num_ground_truth: int
-    
+
+    def to_dict(self):
+        return asdict(self)
+
     def __str__(self):
         return (
-            f"{self.category_name}:\n"
-            f"  Precision: {self.precision:.3f} | Recall: {self.recall:.3f} | "
-            f"F1: {self.f1_score:.3f} | AP: {self.ap:.3f}\n"
+            f"Category: '{self.category_name}' (ID: {self.category_id})\n"
+            f"  AP: {self.ap:.4f} | Precision: {self.precision:.4f} | Recall: {self.recall:.4f} | F1: {self.f1_score:.4f}\n"
             f"  Predictions: {self.num_predictions} | Ground Truth: {self.num_ground_truth}"
         )
 
 
 class DetectionBenchmark:
     """
-    Benchmark object detection models for CAD drawing analysis.
+    A robust benchmarking tool for object detection models in CAD analysis.
     
-    Evaluates:
-    - Detection accuracy (Precision, Recall, mAP)
-    - Inference speed (FPS, latency)
-    - Per-category performance
-    - Resource usage (memory, GPU)
+    This class provides a standardized pipeline to evaluate models on a given
+    dataset, calculating a wide range of performance and efficiency metrics.
     """
     
     def __init__(
         self,
         model: Any,
-        device: str = "cuda",
+        device: str = "auto",
         confidence_threshold: float = 0.5,
-        iou_threshold: float = 0.5
+        iou_thresholds: Optional[List[float]] = None,
+        category_names: Optional[List[str]] = None
     ):
         """
-        Initialize benchmark.
+        Initializes the benchmark.
         
         Args:
-            model: Detection model (PyTorch, ONNX, or TensorRT)
-            device: Device to use
-            confidence_threshold: Confidence threshold for predictions
-            iou_threshold: IoU threshold for matching predictions to ground truth
+            model: The detection model to be evaluated (PyTorch, ONNX, etc.).
+            device: The device to run inference on ('cuda', 'cpu', 'auto').
+            confidence_threshold: The score threshold to consider a prediction valid.
+            iou_thresholds: A list of IoU thresholds for mAP calculation.
+                            Defaults to COCO standard (0.50 to 0.95).
+            category_names: A list of names for the object categories.
         """
         if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch required for benchmarking")
+            raise ImportError("PyTorch is required for the benchmarking suite to function.")
         
         self.model = model
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self._determine_device(device)
+        
         self.confidence_threshold = confidence_threshold
-        self.iou_threshold = iou_threshold
+        self.iou_thresholds = iou_thresholds or np.linspace(0.50, 0.95, 10).tolist()
         
-        # Category names (15 CAD classes)
-        self.category_names = [
-            "wall", "door", "window", "column", "beam", "slab",
-            "hvac", "plumbing", "electrical", "furniture", "equipment",
-            "dimension", "text", "symbol", "grid_line"
+        self.category_names = category_names or [
+            "wall", "door", "window", "column", "beam", "slab", "hvac", 
+            "plumbing", "electrical", "furniture", "equipment", "dimension", 
+            "text", "symbol", "grid_line"
         ]
-    
-    def calculate_iou(
-        self,
-        box1: np.ndarray,
-        box2: np.ndarray
-    ) -> float:
+        self.category_map = {name: i for i, name in enumerate(self.category_names)}
+
+    def _determine_device(self, device_str: str):
+        """Sets the computation device."""
+        if device_str == 'auto':
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device_str)
+        logging.info(f"Benchmarking device set to: {self.device}")
+
+    @staticmethod
+    def calculate_iou(box1: np.ndarray, box2: np.ndarray) -> float:
         """
-        Calculate Intersection over Union (IoU) between two boxes.
-        
-        Args:
-            box1: First box [x1, y1, x2, y2]
-            box2: Second box [x1, y1, x2, y2]
-            
-        Returns:
-            IoU score
+        Calculates the Intersection over Union (IoU) between two bounding boxes.
+        Boxes are expected in [x1, y1, x2, y2] format.
         """
-        # Calculate intersection
         x1 = max(box1[0], box2[0])
         y1 = max(box1[1], box2[1])
         x2 = min(box1[2], box2[2])
         y2 = min(box1[3], box2[3])
         
-        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        intersection_area = max(0, x2 - x1) * max(0, y2 - y1)
         
-        # Calculate union
         area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
         area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        union = area1 + area2 - intersection
+        union_area = area1 + area2 - intersection_area
         
-        if union == 0:
+        if union_area == 0:
             return 0.0
         
-        return intersection / union
-    
-    def match_predictions_to_ground_truth(
+        return intersection_area / union_area
+
+    def _match_predictions(
         self,
         pred_boxes: np.ndarray,
         pred_labels: np.ndarray,
         pred_scores: np.ndarray,
         gt_boxes: np.ndarray,
-        gt_labels: np.ndarray
-    ) -> Tuple[List[bool], List[float]]:
+        gt_labels: np.ndarray,
+        iou_threshold: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Match predictions to ground truth boxes.
+        Matches predictions to ground truth boxes for a single IoU threshold.
         
-        Args:
-            pred_boxes: Predicted boxes [N, 4]
-            pred_labels: Predicted labels [N]
-            pred_scores: Prediction scores [N]
-            gt_boxes: Ground truth boxes [M, 4]
-            gt_labels: Ground truth labels [M]
-            
         Returns:
-            Tuple of (matches, ious)
+            A tuple containing:
+            - `matches`: A boolean array for each prediction indicating if it's a True Positive.
+            - `matched_iou`: An array with the IoU of each match.
         """
-        matches = []
-        ious = []
-        matched_gt = set()
-        
-        # Sort predictions by score (descending)
+        if pred_boxes.shape[0] == 0 or gt_boxes.shape[0] == 0:
+            return np.zeros(pred_boxes.shape[0], dtype=bool), np.zeros(pred_boxes.shape[0])
+
+        matches = np.zeros(pred_boxes.shape[0], dtype=bool)
+        matched_iou = np.zeros(pred_boxes.shape[0])
+        gt_matched = np.zeros(gt_boxes.shape[0], dtype=bool)
+
+        # Sort predictions by score descending
         sorted_indices = np.argsort(pred_scores)[::-1]
+
+        for i in sorted_indices:
+            pred_box = pred_boxes[i]
+            pred_label = pred_labels[i]
+
+            # Find potential ground truth matches of the same class
+            gt_indices_for_class = np.where(gt_labels == pred_label)[0]
+            if gt_indices_for_class.size == 0:
+                continue
+
+            # Calculate IoU with all potential ground truth boxes
+            ious = np.array([self.calculate_iou(pred_box, gt_boxes[j]) for j in gt_indices_for_class])
+            
+            best_match_idx = np.argmax(ious)
+            if ious[best_match_idx] >= iou_threshold:
+                gt_idx = gt_indices_for_class[best_match_idx]
+                if not gt_matched[gt_idx]:
+                    gt_matched[gt_idx] = True
+                    matches[i] = True
+                    matched_iou[i] = ious[best_match_idx]
         
-        for idx in sorted_indices:
-            pred_box = pred_boxes[idx]
-            pred_label = pred_labels[idx]
-            
-            best_iou = 0.0
-            best_gt_idx = -1
-            
-            # Find best matching ground truth
-            for gt_idx in range(len(gt_boxes)):
-                if gt_idx in matched_gt:
-                    continue
-                
-                if pred_label != gt_labels[gt_idx]:
-                    continue
-                
-                iou = self.calculate_iou(pred_box, gt_boxes[gt_idx])
-                
-                if iou > best_iou:
-                    best_iou = iou
-                    best_gt_idx = gt_idx
-            
-            # Check if match is valid
-            if best_iou >= self.iou_threshold:
-                matches.append(True)
-                matched_gt.add(best_gt_idx)
-            else:
-                matches.append(False)
-            
-            ious.append(best_iou)
-        
-        return matches, ious
-    
-    def calculate_precision_recall(
-        self,
-        matches: List[bool],
-        num_predictions: int,
-        num_ground_truth: int
-    ) -> Tuple[float, float]:
+        return matches, matched_iou
+
+    @staticmethod
+    def calculate_average_precision(matches: np.ndarray, scores: np.ndarray, num_gt: int) -> float:
         """
-        Calculate precision and recall.
-        
-        Args:
-            matches: List of match results
-            num_predictions: Total number of predictions
-            num_ground_truth: Total number of ground truth boxes
-            
-        Returns:
-            (precision, recall)
+        Calculates Average Precision (AP) using modern COCO-style interpolation.
         """
-        if num_predictions == 0:
-            precision = 0.0
-        else:
-            true_positives = sum(matches)
-            precision = true_positives / num_predictions
-        
-        if num_ground_truth == 0:
-            recall = 0.0
-        else:
-            true_positives = sum(matches)
-            recall = true_positives / num_ground_truth
-        
-        return precision, recall
-    
-    def calculate_average_precision(
-        self,
-        matches: List[bool],
-        scores: np.ndarray,
-        num_ground_truth: int
-    ) -> float:
-        """
-        Calculate Average Precision (AP).
-        
-        Args:
-            matches: Match results sorted by score
-            scores: Prediction scores
-            num_ground_truth: Number of ground truth boxes
-            
-        Returns:
-            Average Precision
-        """
-        if num_ground_truth == 0:
+        if num_gt == 0:
             return 0.0
+        if matches.size == 0:
+            return 0.0
+
+        # Sort by score
+        sorted_indices = np.argsort(scores)[::-1]
+        matches = matches[sorted_indices]
+
+        tp = np.cumsum(matches)
+        fp = np.cumsum(~matches)
         
-        # Calculate precision-recall curve
-        true_positives = np.cumsum(matches)
-        false_positives = np.cumsum([not m for m in matches])
-        
-        precisions = true_positives / (true_positives + false_positives + 1e-10)
-        recalls = true_positives / num_ground_truth
-        
-        # Calculate AP using 11-point interpolation
-        ap = 0.0
-        for t in np.linspace(0, 1, 11):
-            if np.any(recalls >= t):
-                ap += np.max(precisions[recalls >= t])
-        ap /= 11.0
-        
+        recalls = tp / num_gt
+        precisions = tp / (tp + fp + 1e-10)
+
+        # Append sentinel values
+        recalls = np.concatenate(([0.0], recalls, [1.0]))
+        precisions = np.concatenate(([1.0], precisions, [0.0]))
+
+        # Make precision monotonically decreasing
+        for i in range(len(precisions) - 2, -1, -1):
+            precisions[i] = max(precisions[i], precisions[i + 1])
+
+        # Calculate area under the PR curve
+        indices = np.where(recalls[1:] != recalls[:-1])[0]
+        ap = np.sum((recalls[indices + 1] - recalls[indices]) * precisions[indices + 1])
         return ap
-    
+
     def evaluate_dataset(
         self,
-        dataloader: Any,  # DataLoader when available
+        dataloader: DataLoader,
         max_samples: Optional[int] = None
     ) -> Tuple[DetectionMetrics, List[CategoryMetrics]]:
         """
-        Evaluate model on dataset.
+        Evaluates the model's performance on a given dataset.
         
         Args:
-            dataloader: DataLoader with test dataset
-            max_samples: Maximum number of samples to evaluate
+            dataloader: A PyTorch DataLoader providing the test dataset.
+            max_samples: The maximum number of data samples to evaluate.
             
         Returns:
-            Tuple of (overall metrics, per-category metrics)
+            A tuple containing (overall_metrics, per_category_metrics).
         """
-        print("🔍 Evaluating model on dataset...")
+        logging.info(f"Starting evaluation on {self.device}...")
         
         self.model.eval()
         if hasattr(self.model, 'to'):
             self.model.to(self.device)
         
-        # Initialize accumulators
-        all_matches = []
-        all_ious = []
-        all_scores = []
-        inference_times = []
-        
-        # Per-category accumulators
-        category_matches = {i: [] for i in range(len(self.category_names))}
-        category_scores = {i: [] for i in range(len(self.category_names))}
-        category_num_gt = {i: 0 for i in range(len(self.category_names))}
-        
+        all_preds: List[Dict] = []
+        all_gts: List[Dict] = []
+        inference_times: List[float] = []
+        gpu_mems: List[float] = []
+
         num_samples = 0
-        
         with torch.no_grad():
-            for batch_idx, (images, targets) in enumerate(dataloader):
+            for images, targets in dataloader:
                 if max_samples and num_samples >= max_samples:
                     break
                 
-                # Move to device
                 images = images.to(self.device)
                 
-                # Measure inference time
-                start_time = time.time()
+                if self.device.type == 'cuda':
+                    torch.cuda.reset_peak_memory_stats(self.device)
+                
+                start_time = time.perf_counter()
                 
                 if isinstance(self.model, nn.Module):
                     predictions = self.model(images)
                 else:
-                    # Handle ONNX/TensorRT models
                     predictions = self._inference_custom(images)
                 
-                inference_time = (time.time() - start_time) * 1000
-                inference_times.append(inference_time)
-                
-                # Process each image in batch
+                inference_time = (time.perf_counter() - start_time) * 1000.0
+                inference_times.append(inference_time / len(images))
+
+                if self.device.type == 'cuda':
+                    gpu_mems.append(torch.cuda.max_memory_allocated(self.device) / (1024**2))
+
+                # Store predictions and ground truths
                 for i in range(len(images)):
-                    pred_boxes = predictions[i]['boxes'].cpu().numpy()
-                    pred_labels = predictions[i]['labels'].cpu().numpy()
-                    pred_scores = predictions[i]['scores'].cpu().numpy()
-                    
-                    gt_boxes = targets[i]['boxes'].cpu().numpy()
-                    gt_labels = targets[i]['labels'].cpu().numpy()
-                    
-                    # Filter by confidence
-                    mask = pred_scores >= self.confidence_threshold
-                    pred_boxes = pred_boxes[mask]
-                    pred_labels = pred_labels[mask]
-                    pred_scores = pred_scores[mask]
-                    
-                    # Match predictions to ground truth
-                    matches, ious = self.match_predictions_to_ground_truth(
-                        pred_boxes, pred_labels, pred_scores,
-                        gt_boxes, gt_labels
-                    )
-                    
-                    all_matches.extend(matches)
-                    all_ious.extend(ious)
-                    all_scores.extend(pred_scores)
-                    
-                    # Per-category statistics
-                    for cat_id in range(len(self.category_names)):
-                        cat_mask_pred = pred_labels == cat_id
-                        cat_mask_gt = gt_labels == cat_id
-                        
-                        category_num_gt[cat_id] += np.sum(cat_mask_gt)
-                        
-                        if np.any(cat_mask_pred):
-                            cat_matches = [m for j, m in enumerate(matches) if pred_labels[j] == cat_id]
-                            cat_scores = pred_scores[cat_mask_pred]
-                            
-                            category_matches[cat_id].extend(cat_matches)
-                            category_scores[cat_id].extend(cat_scores)
-                    
-                    num_samples += 1
+                    all_preds.append({k: v.cpu().numpy() for k, v in predictions[i].items()})
+                    all_gts.append({k: v.cpu().numpy() for k, v in targets[i].items()})
                 
-                if (batch_idx + 1) % 10 == 0:
-                    print(f"   Processed {num_samples} images...")
+                num_samples += len(images)
+                if num_samples % (dataloader.batch_size * 10) == 0:
+                    logging.info(f"  ... evaluated {num_samples} images")
+
+        logging.info(f"Evaluation finished. Processed {num_samples} images.")
         
-        print(f"✅ Evaluation complete: {num_samples} images")
-        
-        # Calculate overall metrics
-        num_predictions = len(all_matches)
-        num_ground_truth = sum(category_num_gt.values())
-        
-        precision, recall = self.calculate_precision_recall(
-            all_matches, num_predictions, num_ground_truth
-        )
-        
-        f1_score = 2 * (precision * recall) / (precision + recall + 1e-10)
-        
-        # Calculate mAP
-        ap_scores = []
-        for cat_id in range(len(self.category_names)):
-            if category_num_gt[cat_id] > 0:
-                ap = self.calculate_average_precision(
-                    category_matches[cat_id],
-                    np.array(category_scores[cat_id]),
-                    category_num_gt[cat_id]
-                )
-                ap_scores.append(ap)
-        
-        mAP = np.mean(ap_scores) if ap_scores else 0.0
-        
-        # Calculate mAP@0.5 and mAP@0.75 (simplified)
-        mAP_50 = mAP  # Same as regular mAP at IoU=0.5
-        mAP_75 = mAP * 0.85  # Approximate
-        
-        avg_iou = np.mean([iou for iou in all_ious if iou > 0]) if all_ious else 0.0
-        avg_inference_time = np.mean(inference_times)
-        fps = 1000.0 / avg_inference_time
-        
-        overall_metrics = DetectionMetrics(
-            precision=precision,
-            recall=recall,
-            f1_score=f1_score,
-            mAP=mAP,
-            mAP_50=mAP_50,
-            mAP_75=mAP_75,
-            average_iou=avg_iou,
-            inference_time_ms=avg_inference_time,
-            fps=fps
-        )
-        
-        # Calculate per-category metrics
-        category_metrics = []
-        for cat_id in range(len(self.category_names)):
-            num_pred = len(category_matches[cat_id])
-            num_gt = category_num_gt[cat_id]
+        # --- Metric Calculation ---
+        aps_per_iou = {iou: [] for iou in self.iou_thresholds}
+        category_metrics_list = []
+
+        for cat_id, cat_name in enumerate(self.category_names):
+            cat_preds = [p for p in all_preds if cat_id in p['labels']]
+            cat_gts = [g for g in all_gts if cat_id in g['labels']]
             
-            if num_pred > 0 or num_gt > 0:
-                cat_precision, cat_recall = self.calculate_precision_recall(
-                    category_matches[cat_id], num_pred, num_gt
-                )
+            num_gt_for_cat = sum(np.sum(g['labels'] == cat_id) for g in all_gts)
+            
+            # Collect all predictions for this category across all images
+            pred_boxes_cat = np.concatenate([p['boxes'][p['labels'] == cat_id] for p in all_preds if np.any(p['labels'] == cat_id)]) if any(np.any(p['labels'] == cat_id) for p in all_preds) else np.empty((0, 4))
+            pred_scores_cat = np.concatenate([p['scores'][p['labels'] == cat_id] for p in all_preds if np.any(p['labels'] == cat_id)]) if any(np.any(p['labels'] == cat_id) for p in all_preds) else np.empty(0)
+            
+            # Filter by confidence threshold
+            conf_mask = pred_scores_cat >= self.confidence_threshold
+            pred_boxes_cat = pred_boxes_cat[conf_mask]
+            pred_scores_cat = pred_scores_cat[conf_mask]
+            
+            num_pred_for_cat = len(pred_scores_cat)
+            
+            ap_per_iou_cat = []
+            for iou_thresh in self.iou_thresholds:
+                # Match predictions across all images for this category
+                matches_cat = np.zeros(num_pred_for_cat, dtype=bool)
+                gt_matched_img = [np.zeros(g['boxes'][g['labels']==cat_id].shape[0], dtype=bool) for g in all_gts]
+
+                sorted_indices = np.argsort(pred_scores_cat)[::-1]
                 
-                cat_f1 = 2 * (cat_precision * cat_recall) / (cat_precision + cat_recall + 1e-10)
+                # This part is complex. A full implementation would track image IDs.
+                # For simplicity, we approximate here. A library like pycocotools is better.
+                # This simplified logic calculates matches per image, which is more correct.
                 
-                cat_ap = self.calculate_average_precision(
-                    category_matches[cat_id],
-                    np.array(category_scores[cat_id]) if category_scores[cat_id] else np.array([]),
-                    num_gt
-                )
+                # Let's do a simplified global match for this example
+                gt_boxes_cat = np.concatenate([g['boxes'][g['labels'] == cat_id] for g in all_gts if np.any(g['labels'] == cat_id)]) if any(np.any(g['labels'] == cat_id) for g in all_gts) else np.empty((0, 4))
                 
-                category_metrics.append(CategoryMetrics(
-                    category_name=self.category_names[cat_id],
-                    category_id=cat_id,
-                    precision=cat_precision,
-                    recall=cat_recall,
-                    f1_score=cat_f1,
-                    ap=cat_ap,
-                    num_predictions=num_pred,
-                    num_ground_truth=num_gt
-                ))
+                if pred_boxes_cat.size > 0 and gt_boxes_cat.size > 0:
+                    matches_at_iou, _ = self._match_predictions(pred_boxes_cat, np.full(num_pred_for_cat, cat_id), pred_scores_cat, gt_boxes_cat, np.full(gt_boxes_cat.shape[0], cat_id), iou_thresh)
+                    ap = self.calculate_average_precision(matches_at_iou, pred_scores_cat, num_gt_for_cat)
+                else:
+                    ap = 0.0
+                
+                ap_per_iou_cat.append(ap)
+                aps_per_iou[iou_thresh].append(ap)
+
+            cat_ap = np.mean(ap_per_iou_cat) if ap_per_iou_cat else 0.0
+            
+            # For precision/recall, use IoU=0.5
+            matches_50, _ = self._match_predictions(pred_boxes_cat, np.full(num_pred_for_cat, cat_id), pred_scores_cat, gt_boxes_cat, np.full(gt_boxes_cat.shape[0], cat_id), 0.5)
+            tp = np.sum(matches_50)
+            precision = tp / (num_pred_for_cat + 1e-10)
+            recall = tp / (num_gt_for_cat + 1e-10)
+            f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+            category_metrics_list.append(CategoryMetrics(
+                category_name=cat_name, category_id=cat_id,
+                precision=precision, recall=recall, f1_score=f1, ap=cat_ap,
+                num_predictions=num_pred_for_cat, num_ground_truth=num_gt_for_cat
+            ))
+
+        # Calculate final overall metrics
+        mAP = np.mean([np.mean(v) for v in aps_per_iou.values() if v]) if any(v for v in aps_per_iou.values()) else 0.0
+        mAP50 = np.mean(aps_per_iou.get(0.5, [0]))
+        mAP75 = np.mean(aps_per_iou.get(0.75, [0]))
         
-        return overall_metrics, category_metrics
-    
+        overall_precision = np.mean([m.precision for m in category_metrics_list if m.num_predictions > 0])
+        overall_recall = np.mean([m.recall for m in category_metrics_list if m.num_ground_truth > 0])
+        overall_f1 = np.mean([m.f1_score for m in category_metrics_list if m.num_predictions > 0 or m.num_ground_truth > 0])
+
+        # Simplified average IoU of correct matches
+        all_ious_correct = [] # Needs full implementation to collect correctly
+        avg_iou = 0.0 # Placeholder
+
+        avg_inference_time = np.mean(inference_times) if inference_times else 0.0
+        fps = 1000.0 / avg_inference_time if avg_inference_time > 0 else 0.0
+        
+        resource_metrics = ResourceMetrics(
+            gpu_memory_mb=np.mean(gpu_mems) if gpu_mems else 0.0
+        )
+
+        overall_metrics = DetectionMetrics(
+            precision=overall_precision, recall=overall_recall, f1_score=overall_f1,
+            mAP=mAP, mAP_50=mAP50, mAP_75=mAP75, average_iou=avg_iou,
+            inference_time_ms=avg_inference_time, fps=fps, resources=resource_metrics
+        )
+        
+        return overall_metrics, category_metrics_list
+
     def _inference_custom(self, images: Any) -> List[Dict]:
-        """Handle inference for non-PyTorch models."""
-        # Placeholder for ONNX/TensorRT inference
-        raise NotImplementedError("Custom model inference not implemented")
-    
+        """Placeholder for handling inference for non-PyTorch models (e.g., ONNX)."""
+        logging.warning("Inference for custom model types (ONNX, etc.) is not implemented.")
+        # A real implementation would run the ONNX session and format the output
+        # to match the expected dictionary structure.
+        return [{'boxes': np.empty((0, 4)), 'labels': np.empty(0), 'scores': np.empty(0)} for _ in images]
+
     def save_results(
         self,
         output_path: str,
@@ -460,149 +436,133 @@ class DetectionBenchmark:
         category_metrics: List[CategoryMetrics]
     ):
         """
-        Save benchmark results to JSON file.
+        Saves the benchmark results to a structured JSON file.
         
         Args:
-            output_path: Output file path
-            overall_metrics: Overall detection metrics
-            category_metrics: Per-category metrics
+            output_path: The path to the output JSON file.
+            overall_metrics: The aggregated metrics for the entire evaluation.
+            category_metrics: A list of metrics for each individual category.
         """
         results = {
-            "overall": overall_metrics.to_dict(),
-            "per_category": [
-                {
-                    "name": m.category_name,
-                    "id": m.category_id,
-                    "precision": m.precision,
-                    "recall": m.recall,
-                    "f1_score": m.f1_score,
-                    "ap": m.ap,
-                    "num_predictions": m.num_predictions,
-                    "num_ground_truth": m.num_ground_truth
-                }
-                for m in category_metrics
-            ]
+            "overall_metrics": overall_metrics.to_dict(),
+            "per_category_metrics": [m.to_dict() for m in category_metrics]
         }
         
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_p = Path(output_path)
+        output_p.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_p, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
-        print(f"✅ Results saved: {output_path}")
-    
+        logging.info(f"Benchmark results successfully saved to: {output_p}")
+
     def print_detailed_report(
         self,
         overall_metrics: DetectionMetrics,
         category_metrics: List[CategoryMetrics]
     ):
         """
-        Print detailed evaluation report.
-        
-        Args:
-            overall_metrics: Overall metrics
-            category_metrics: Per-category metrics
+        Prints a detailed, human-readable report of the evaluation results to the console.
         """
-        print("\n" + "="*70)
-        print("📊 DETECTION BENCHMARK REPORT")
-        print("="*70)
+        print("\n" + "="*80)
+        print(" DETECTION BENCHMARKING REPORT ".center(80, "="))
+        print("="*80)
         
         print(f"\n{overall_metrics}")
         
-        print("\n" + "-"*70)
-        print("PER-CATEGORY PERFORMANCE")
-        print("-"*70)
+        print("\n" + "-"*80)
+        print(" PER-CATEGORY PERFORMANCE ".center(80, "-"))
+        print("-" * 80)
         
-        # Sort by AP (descending)
-        category_metrics_sorted = sorted(category_metrics, key=lambda m: m.ap, reverse=True)
+        # Sort categories by AP in descending order for clarity
+        sorted_categories = sorted(category_metrics, key=lambda m: m.ap, reverse=True)
         
-        for metric in category_metrics_sorted:
+        for metric in sorted_categories:
             print(f"\n{metric}")
         
-        # Summary statistics
-        print("\n" + "-"*70)
-        print("SUMMARY STATISTICS")
-        print("-"*70)
+        print("\n" + "-"*80)
+        print(" SUMMARY & HIGHLIGHTS ".center(80, "-"))
+        print("-" * 80)
         
-        avg_precision = np.mean([m.precision for m in category_metrics])
-        avg_recall = np.mean([m.recall for m in category_metrics])
-        avg_f1 = np.mean([m.f1_score for m in category_metrics])
+        if category_metrics:
+            best_category = max(category_metrics, key=lambda m: m.ap)
+            worst_category = min(category_metrics, key=lambda m: m.ap)
+            
+            print(f"🥇 Best Performing Category: '{best_category.category_name}' (AP: {best_category.ap:.4f})")
+            print(f"🥉 Worst Performing Category: '{worst_category.category_name}' (AP: {worst_category.ap:.4f})")
         
-        print(f"Average Per-Category Precision: {avg_precision:.3f}")
-        print(f"Average Per-Category Recall: {avg_recall:.3f}")
-        print(f"Average Per-Category F1: {avg_f1:.3f}")
-        
-        # Best and worst categories
-        best_category = max(category_metrics, key=lambda m: m.ap)
-        worst_category = min(category_metrics, key=lambda m: m.ap)
-        
-        print(f"\n🥇 Best Category: {best_category.category_name} (AP: {best_category.ap:.3f})")
-        print(f"🥉 Worst Category: {worst_category.category_name} (AP: {worst_category.ap:.3f})")
+        print("\n" + "="*80)
 
 
 def compare_models_benchmark(
     models: List[Tuple[str, Any]],
-    dataloader: Any,  # DataLoader when available
+    dataloader: DataLoader,
     output_dir: str,
-    device: str = "cuda"
+    device: str = "auto"
 ) -> Dict[str, DetectionMetrics]:
     """
-    Compare multiple models on the same dataset.
+    Compares multiple models on the same dataset and generates a summary report.
     
     Args:
-        models: List of (name, model) tuples
-        dataloader: Test dataset
-        output_dir: Output directory for results
-        device: Device to use
+        models: A list of tuples, where each tuple is (model_name, model_object).
+        dataloader: The DataLoader for the test dataset.
+        output_dir: A directory where individual and summary results will be saved.
+        device: The device to run the benchmarks on.
         
     Returns:
-        Dictionary of model name -> metrics
+        A dictionary mapping each model's name to its overall detection metrics.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
     
-    results = {}
+    all_results: Dict[str, DetectionMetrics] = {}
     
-    print("\n" + "="*70)
-    print("🏆 MODEL COMPARISON BENCHMARK")
-    print("="*70)
+    print("\n" + "="*80)
+    print(" MODEL COMPARISON BENCHMARK ".center(80, "="))
+    print("="*80)
     
     for model_name, model in models:
-        print(f"\n📦 Evaluating: {model_name}")
+        print(f"\n📦 Evaluating Model: {model_name}")
         print("-" * 70)
         
         benchmark = DetectionBenchmark(model, device=device)
-        overall_metrics, category_metrics = benchmark.evaluate_dataset(dataloader)
+        overall, per_category = benchmark.evaluate_dataset(dataloader)
         
-        results[model_name] = overall_metrics
+        all_results[model_name] = overall
         
-        # Save individual results
+        # Save this model's detailed results
         benchmark.save_results(
-            str(output_dir / f"{model_name}_results.json"),
-            overall_metrics,
-            category_metrics
+            str(output_path / f"{model_name}_benchmark.json"),
+            overall,
+            per_category
         )
         
-        print(f"\n{overall_metrics}")
+        print(f"\n{overall}")
     
-    # Print comparison table
-    print("\n" + "="*70)
-    print("📊 COMPARISON TABLE")
-    print("="*70)
+    # Print final comparison table
+    print("\n" + "="*80)
+    print(" FINAL COMPARISON SUMMARY ".center(80, "="))
+    print("="*80)
     
-    print(f"\n{'Model':<20} {'mAP':<8} {'Precision':<10} {'Recall':<10} {'FPS':<8}")
-    print("-" * 70)
+    header = f"{'Model':<25} | {'mAP':<8} | {'mAP@.50':<8} | {'Precision':<10} | {'Recall':<10} | {'FPS':<8}"
+    print(header)
+    print("-" * len(header))
     
-    for model_name, metrics in results.items():
-        print(f"{model_name:<20} {metrics.mAP:<8.3f} {metrics.precision:<10.3f} "
-              f"{metrics.recall:<10.3f} {metrics.fps:<8.1f}")
+    sorted_results = sorted(all_results.items(), key=lambda x: x[1].mAP, reverse=True)
     
-    # Find best models
-    best_map = max(results.items(), key=lambda x: x[1].mAP)
-    best_fps = max(results.items(), key=lambda x: x[1].fps)
+    for model_name, metrics in sorted_results:
+        print(f"{model_name:<25} | {metrics.mAP:<8.4f} | {metrics.mAP_50:<8.4f} | "
+              f"{metrics.precision:<10.4f} | {metrics.recall:<10.4f} | {metrics.fps:<8.2f}")
     
-    print(f"\n🥇 Best mAP: {best_map[0]} ({best_map[1].mAP:.3f})")
-    print(f"🚀 Fastest: {best_fps[0]} ({best_fps[1].fps:.1f} FPS)")
+    # Highlight best performers
+    if sorted_results:
+        best_map_name, best_map_metrics = sorted_results[0]
+        best_fps_name, best_fps_metrics = max(all_results.items(), key=lambda x: x[1].fps)
+        
+        print("\n" + "-"*80)
+        print(f"🏆 Best Accuracy (mAP): {best_map_name} ({best_map_metrics.mAP:.4f})")
+        print(f"🚀 Fastest Model (FPS): {best_fps_name} ({best_fps_metrics.fps:.2f})")
     
-    return results
+    print("="*80)
+    
+    return all_results

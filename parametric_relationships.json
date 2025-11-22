@@ -1,0 +1,64 @@
+{
+  "expressions": [
+    {
+      "target": "beam_B1.length",
+      "expression": "abs(column_C2.x - column_C1.x)",
+      "type": "formula",
+      "dependencies": [
+        "column_C2",
+        "column_C1"
+      ]
+    },
+    {
+      "target": "beam_B2.length",
+      "expression": "abs(column_C4.x - column_C3.x)",
+      "type": "formula",
+      "dependencies": [
+        "column_C3",
+        "column_C4"
+      ]
+    },
+    {
+      "target": "beam_B3.length",
+      "expression": "abs(column_C3.y - column_C1.y)",
+      "type": "formula",
+      "dependencies": [
+        "column_C3",
+        "column_C1"
+      ]
+    },
+    {
+      "target": "beam_B4.length",
+      "expression": "abs(column_C4.y - column_C2.y)",
+      "type": "formula",
+      "dependencies": [
+        "column_C2",
+        "column_C4"
+      ]
+    },
+    {
+      "target": "slab_001.span_x",
+      "expression": "beam_B1.length",
+      "type": "formula",
+      "dependencies": [
+        "beam_B1"
+      ]
+    },
+    {
+      "target": "slab_001.span_y",
+      "expression": "beam_B3.length",
+      "type": "formula",
+      "dependencies": [
+        "beam_B3"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "element1": "beam_B1",
+      "element2": "beam_B2",
+      "type": "distance",
+      "value": 0
+    }
+  ]
+}

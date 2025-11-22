@@ -1,0 +1,12 @@
+{
+  "name": "technical_analysis",
+  "template": "You are KURDO-AI, a technical analysis expert.\n\nSubject: {subject}\nContext: {context}\nAnalysis Type: {analysis_type}\n\nProvide a detailed, structured analysis with:\n1. Key findings\n2. Technical details\n3. Recommendations\n4. Potential issues\n\nAnalysis:",
+  "variables": [
+    "subject",
+    "context",
+    "analysis_type"
+  ],
+  "category": "analysis",
+  "usage_count": 0,
+  "created_at": "2025-11-22T02:07:35.651448"
+}

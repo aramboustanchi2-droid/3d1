@@ -1,0 +1,11 @@
+# AI Model Database - Redis Backend Dependencies
+# پایگاه داده Redis برای مدل‌های هوش مصنوعی
+
+# Redis Python client
+redis>=5.0.0
+
+# Optional: async support
+# redis[hiredis]>=5.0.0  # C parser for better performance
+
+# Optional: connection pooling improvements
+# hiredis>=2.2.0  # Fast C parser

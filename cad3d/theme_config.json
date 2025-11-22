@@ -1,0 +1,70 @@
+{
+    "default": "light",
+    "themes": [
+        {
+            "name": "light",
+            "title": "☀️ روشن",
+            "description": "تم روشن و مدرن",
+            "accent": "blue",
+            "icon": "☀️"
+        },
+        {
+            "name": "dark",
+            "title": "🌙 تاریک",
+            "description": "تم تاریک و راحت",
+            "accent": "blue",
+            "icon": "🌙"
+        },
+        {
+            "name": "solar",
+            "title": "🌅 سولار",
+            "description": "گرم و انرژی‌بخش",
+            "accent": "amber",
+            "icon": "🌅"
+        },
+        {
+            "name": "midnight",
+            "title": "🌌 نیمه‌شب",
+            "description": "عمیق و جذاب",
+            "accent": "violet",
+            "icon": "🌌"
+        },
+        {
+            "name": "emerald",
+            "title": "🍃 زمرد",
+            "description": "طبیعی و آرام",
+            "accent": "emerald",
+            "icon": "🍃"
+        },
+        {
+            "name": "rose",
+            "title": "🌸 رز",
+            "description": "نرم و زیبا",
+            "accent": "rose",
+            "icon": "🌸"
+        },
+        {
+            "name": "indigo",
+            "title": "💎 نیلی",
+            "description": "حرفه‌ای و شیک",
+            "accent": "indigo",
+            "icon": "💎"
+        }
+    ],
+    "accents": [
+        "blue",
+        "emerald",
+        "amber",
+        "violet",
+        "rose",
+        "indigo"
+    ],
+    "features": {
+        "smooth_transitions": true,
+        "keyboard_navigation": true,
+        "system_preference": true,
+        "local_storage": true,
+        "accessibility": true
+    },
+    "version": 2
+}

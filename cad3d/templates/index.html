@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="{{ current_theme }}">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="description" content="مبدل هوشمند CAD برای تبدیل عکس، PDF، DXF و DWG به مدل سه‌بعدی" />
+    <title>مبدل جامع CAD - تبدیل دوبعدی به سه‌بعدی</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <link rel="preload" href="/static/css/base.min.css" as="style" />
+    <link rel="stylesheet" href="/static/css/base.min.css" />
+    <script defer src="/static/js/theme.js"></script>
+    <style>
+        /* Inline critical styles for faster first paint */
+        body {
+            font-family: "Vazirmatn", Tahoma, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        main {
+            max-width: 980px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.75rem;
+            box-shadow: var(--shadow-soft);
+            backdrop-filter: blur(6px)
+        }
+
+        h1 {
+            margin: 0 0 1rem;
+            font-size: 1.8rem;
+            font-weight: 600;
+            letter-spacing: .5px;
+            display: flex;
+            justify-content: center;
+            gap: .5rem
+        }
+
+        .subtitle {
+            margin: -.5rem 0 1.5rem;
+            text-align: center;
+            color: var(--text-soft);
+            font-size: .95rem
+        }
+
+        label {
+            display: block;
+            margin: .9rem 0 .4rem;
+            font-weight: 500;
+            color: var(--text)
+        }
+
+        input[type=file],
+        input[type=number],
+        select {
+            width: 100%;
+            padding: .7rem .75rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--field-bg);
+            color: var(--text);
+            font-size: .9rem
+        }
+
+        input[type=checkbox] {
+            transform: scale(1.2);
+            margin-left: .4rem
+        }
+
+        button {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-alt) 100%);
+            color: #fff;
+            border: none;
+            padding: .85rem 2.2rem;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            box-shadow: var(--shadow-accent);
+            transition: .25s
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 28px var(--shadow-accent);
+            background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%)
+        }
+
+        .info {
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            padding: 1rem 1.1rem;
+            border-radius: 12px;
+            font-size: .85rem;
+            line-height: 1.5;
+            margin-bottom: 1.5rem
+        }
+
+        .advanced {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            padding: 1rem 1rem;
+            border-radius: 12px;
+            margin-top: 1rem;
+            display: none
+        }
+
+        .advanced-toggle {
+            cursor: pointer;
+            color: var(--accent);
+            text-align: center;
+            margin-top: 1rem;
+            font-size: .9rem;
+            font-weight: 600;
+            transition: .2s
+        }
+
+        .advanced-toggle:hover {
+            color: var(--accent-hover)
+        }
+
+        .help {
+            font-size: .75rem;
+            color: var(--text-soft);
+            margin-top: 1.25rem;
+            text-align: center;
+            line-height: 1.4
+        }
+
+        .theme-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .6rem;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem
+        }
+
+        .theme-group {
+            display: flex;
+            gap: .5rem;
+            flex-wrap: wrap;
+            justify-content: center
+        }
+
+        .theme-chip {
+            padding: .5rem .9rem;
+            border-radius: 24px;
+            font-size: .75rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: var(--chip-bg);
+            color: var(--text-soft);
+            border: 1px solid var(--border);
+            transition: .2s;
+            position: relative;
+            overflow: hidden
+        }
+
+        .theme-chip.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .15)
+        }
+
+        .theme-chip:hover {
+            background: var(--chip-hover);
+            color: var(--text);
+            transform: translateY(-1px)
+        }
+
+        .theme-chip:focus {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px
+        }
+
+        .theme-chip::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, .3);
+            transform: translate(-50%, -50%);
+            transition: width .5s, height .5s
+        }
+
+        .theme-chip:active::before {
+            width: 200px;
+            height: 200px
+        }
+
+        @keyframes themePreview {
+            0% {
+                transform: translateY(-1px) scale(1);
+            }
+
+            50% {
+                transform: translateY(-2px) scale(1.05);
+            }
+
+            100% {
+                transform: translateY(-1px) scale(1);
+            }
+        }
+
+        .theme-chip:hover:not(.active) {
+            animation: themePreview .4s ease
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <div class="card">
+            <h1>🏗️ مبدل جامع CAD</h1>
+            <p class="subtitle">تبدیل عکس، PDF، DXF و DWG به مدل سه‌بعدی بهینه</p>
+
+            <div class="theme-bar">
+                <div class="theme-group" id="themeSwitcher" role="radiogroup" aria-label="انتخاب تم">
+                    {% for t in themes %}
+                    <div class="theme-chip {% if t.name == current_theme %}active{% endif %}" data-theme="{{ t.name }}"
+                        role="radio" aria-checked="{{ 'true' if t.name == current_theme else 'false' }}"
+                        aria-label="تم {{ t.title }} - {{ t.description if t.description else t.title }}"
+                        tabindex="{{ '0' if t.name == current_theme else '-1' }}"
+                        title="{{ t.description if t.description else t.title }}">
+                        {{ t.icon if t.icon else '' }} {{ t.title }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="info">
+                ✅ ورودی: <strong>JPG · PNG · PDF · DXF · DWG</strong><br>
+                ✅ خروجی: DXF / DWG (با ODA) · اکستروژن سه‌بعدی سریع<br>
+                ⚡ پشتیبانی از تنظیمات مهندسی و گزارش‌گیری
+            </div>
+
+            <form method="post" action="/convert" enctype="multipart/form-data">
+                <label>📁 فایل ورودی</label>
+                <input type="file" name="file" accept=".jpg,.jpeg,.png,.pdf,.dxf,.dwg" required>
+
+                <label>📤 فرمت خروجی</label>
+                <select name="out_format">
+                    <option value="dxf">DXF</option>
+                    <option value="dwg">DWG (نیاز به ODA)</option>
+                </select>
+
+                <label style="margin-top:1.2rem">
+                    <input type="checkbox" name="to_3d" value="yes" checked>
+                    اکستروژن سه‌بعدی (بعد از تبدیل)
+                </label>
+
+                <label>📏 ارتفاع اکستروژن (میلی‌متر)</label>
+                <input type="number" step="1" name="height" value="3000" min="1">
+
+                <div class="advanced-toggle" onclick="toggleAdvanced()">⚙️ تنظیمات پیشرفته (کلیک کنید)</div>
+                <div id="advanced" class="advanced">
+                    <label>🎯 پروفایل مهندسی</label>
+                    <select name="engineering_profile">
+                        <option value="generic">عمومی</option>
+                        <option value="architectural">معماری</option>
+                        <option value="civil_bridge">پل / سازه</option>
+                        <option value="structural">سازه</option>
+                        <option value="mechanical">مکانیک</option>
+                    </select>
+
+                    <label>حالت عکس (تصحیح پرسپکتیو)</label>
+                    <select name="photo_mode">
+                        <option value="off">خاموش</option>
+                        <option value="on">روشن</option>
+                    </select>
+
+                    <label>کیفیت تشخیص</label>
+                    <select name="quality">
+                        <option value="standard">Standard</option>
+                        <option value="high">High</option>
+                    </select>
+
+                    <label>
+                        <input type="checkbox" name="generate_report" value="yes" checked>
+                        ایجاد گزارش تحلیل کامل (HTML)
+                    </label>
+
+                    <label>مرجع عرض واقعی (میلی‌متر)</label>
+                    <input type="number" step="1" name="ref_width_mm" placeholder="مثلاً 3500 برای عرض یک لاین">
+
+                    <label>DPI (PDF)</label>
+                    <input type="number" step="1" name="dpi" value="300" min="72" max="600">
+
+                    <label>Scale (mm per pixel)</label>
+                    <input type="number" step="0.1" name="scale" value="1.0" min="0.1">
+
+                    <label>Confidence (PDF)</label>
+                    <input type="number" step="0.05" name="confidence" value="0.5" min="0" max="1">
+
+                    <label>DWG Version</label>
+                    <select name="dwg_version">
+                        <option value="ACAD2018">ACAD2018</option>
+                        <option value="ACAD2013">ACAD2013</option>
+                        <option value="ACAD2010">ACAD2010</option>
+                        <option value="ACAD2007">ACAD2007</option>
+                    </select>
+                </div>
+
+                <div style="text-align:center;margin-top:1.4rem">
+                    <button type="submit">🚀 تبدیل و دانلود</button>
+                </div>
+                <p class="help">
+                    📌 نیاز به LWPOLYLINE بسته در DXF/DWG<br>
+                    📌 ODA برای تبدیل DWG لازم است<br>
+                    ✅ همه قابلیت‌ها فعال است
+                </p>
+            </form>
+        </div>
+    </main>
+    <script>
+        function toggleAdvanced() { const adv = document.getElementById('advanced'); adv.style.display = adv.style.display === 'none' ? 'block' : 'none' }
+    </script>
+</body>
+
+</html>

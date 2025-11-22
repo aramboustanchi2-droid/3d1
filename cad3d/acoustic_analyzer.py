@@ -1,184 +1,253 @@
 """
-سیستم تحلیل آکوستیک و صوتی حرفه‌ای
 Professional Acoustic Analysis System
 
-این ماژول برای تحلیل و تشخیص عناصر آکوستیک در نقشه‌های معماری طراحی شده است:
-- تشخیص فضاهای آکوستیک (سالن همایش، استودیو، کلاس)
-- تحلیل عایق صوتی و جاذب صدا
-- محاسبه زمان پسماند (RT60)
-- بررسی استانداردهای آکوستیک
-- تحلیل سطوح صوتی و نویز محیط
+This module is designed for the analysis and detection of acoustic elements in
+architectural drawings. It can:
+- Detect acoustic spaces (e.g., conference halls, studios, classrooms).
+- Analyze sound insulation and absorption materials.
+- Calculate reverberation time (RT60).
+- Check against acoustic standards.
+- Analyze sound pressure levels and ambient noise.
 
 Author: CAD 3D Converter Team
-Date: 2025-11-15
+Date: 2025-11-18
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
 import ezdxf
+from ezdxf.document import Drawing
+from ezdxf.layouts import Modelspace
+from ezdxf.entities import LWPolyline, Insert, Circle
 from pathlib import Path
 import json
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class AcousticSpaceType(Enum):
-    """انواع فضاهای آکوستیک"""
-    # سالن‌ها و تالارها
-    CONFERENCE_HALL = "conference_hall"           # سالن کنفرانس
-    AUDITORIUM = "auditorium"                     # آمفی‌تئاتر
-    LECTURE_HALL = "lecture_hall"                 # سالن سخنرانی
-    CONCERT_HALL = "concert_hall"                 # سالن کنسرت
-    THEATER = "theater"                           # تئاتر
-    CINEMA = "cinema"                             # سینما
-    
-    # استودیوها
-    RECORDING_STUDIO = "recording_studio"         # استودیو ضبط صدا
-    BROADCAST_STUDIO = "broadcast_studio"         # استودیو پخش
-    MUSIC_STUDIO = "music_studio"                 # استودیو موسیقی
-    CONTROL_ROOM = "control_room"                 # اتاق کنترل
-    VOCAL_BOOTH = "vocal_booth"                   # بوت آوازخوانی
-    
-    # آموزشی
-    CLASSROOM = "classroom"                       # کلاس درس
-    LANGUAGE_LAB = "language_lab"                 # آزمایشگاه زبان
-    MUSIC_ROOM = "music_room"                     # اتاق موسیقی
-    LIBRARY = "library"                           # کتابخانه
-    
-    # اداری و عمومی
-    OFFICE = "office"                             # دفتر کار
-    MEETING_ROOM = "meeting_room"                 # اتاق جلسه
-    CALL_CENTER = "call_center"                   # مرکز تماس
-    RESTAURANT = "restaurant"                     # رستوران
-    
-    # صنعتی
-    INDUSTRIAL_SPACE = "industrial_space"         # فضای صنعتی
-    MACHINE_ROOM = "machine_room"                 # موتورخانه
-    
-    # سلامت
-    HOSPITAL_ROOM = "hospital_room"               # اتاق بیمارستان
-    SURGERY_ROOM = "surgery_room"                 # اتاق عمل
-    
-    UNKNOWN = "unknown"                           # نامشخص
+    """Enumeration for types of acoustic spaces."""
+    # Halls and Auditoriums
+    CONFERENCE_HALL = "conference_hall"
+    AUDITORIUM = "auditorium"
+    LECTURE_HALL = "lecture_hall"
+    CONCERT_HALL = "concert_hall"
+    THEATER = "theater"
+    CINEMA = "cinema"
+
+    # Studios
+    RECORDING_STUDIO = "recording_studio"
+    BROADCAST_STUDIO = "broadcast_studio"
+    MUSIC_STUDIO = "music_studio"
+    CONTROL_ROOM = "control_room"
+    VOCAL_BOOTH = "vocal_booth"
+
+    # Educational
+    CLASSROOM = "classroom"
+    LANGUAGE_LAB = "language_lab"
+    MUSIC_ROOM = "music_room"
+    LIBRARY = "library"
+
+    # Office and Public
+    OFFICE = "office"
+    MEETING_ROOM = "meeting_room"
+    CALL_CENTER = "call_center"
+    RESTAURANT = "restaurant"
+
+    # Industrial
+    INDUSTRIAL_SPACE = "industrial_space"
+    MACHINE_ROOM = "machine_room"
+
+    # Healthcare
+    HOSPITAL_ROOM = "hospital_room"
+    SURGERY_ROOM = "surgery_room"
+
+    UNKNOWN = "unknown"
 
 
 class AcousticMaterialType(Enum):
-    """انواع مواد آکوستیک"""
-    # جاذب‌های صوتی
-    ABSORBER_FOAM = "absorber_foam"               # فوم جاذب
-    ABSORBER_PANEL = "absorber_panel"             # پنل جاذب
-    ABSORBER_CEILING = "absorber_ceiling"         # سقف کاذب جاذب
-    ABSORBER_FABRIC = "absorber_fabric"           # پارچه جاذب
-    ABSORBER_WOOD = "absorber_wood"               # چوب جاذب
-    
-    # عایق‌های صوتی
-    INSULATION_WALL = "insulation_wall"           # عایق دیوار
-    INSULATION_FLOOR = "insulation_floor"         # عایق کف
-    INSULATION_CEILING = "insulation_ceiling"     # عایق سقف
-    INSULATION_DOOR = "insulation_door"           # در عایق
-    INSULATION_WINDOW = "insulation_window"       # پنجره عایق
-    
-    # پراکننده‌های صوتی
-    DIFFUSER_QRD = "diffuser_qrd"                 # پراکننده QRD
-    DIFFUSER_SKYLINE = "diffuser_skyline"         # پراکننده Skyline
-    DIFFUSER_HEMISPHERE = "diffuser_hemisphere"   # پراکننده نیم‌کره
-    
-    # تله‌های باس
-    BASS_TRAP_CORNER = "bass_trap_corner"         # تله باس گوشه
-    BASS_TRAP_PANEL = "bass_trap_panel"           # پنل تله باس
+    """Enumeration for types of acoustic materials."""
+    # Sound Absorbers
+    ABSORBER_FOAM = "absorber_foam"
+    ABSORBER_PANEL = "absorber_panel"
+    ABSORBER_CEILING = "absorber_ceiling"
+    ABSORBER_FABRIC = "absorber_fabric"
+    ABSORBER_WOOD = "absorber_wood"
+
+    # Sound Insulators
+    INSULATION_WALL = "insulation_wall"
+    INSULATION_FLOOR = "insulation_floor"
+    INSULATION_CEILING = "insulation_ceiling"
+    INSULATION_DOOR = "insulation_door"
+    INSULATION_WINDOW = "insulation_window"
+
+    # Sound Diffusers
+    DIFFUSER_QRD = "diffuser_qrd"  # Quadratic Residue Diffuser
+    DIFFUSER_SKYLINE = "diffuser_skyline"
+    DIFFUSER_HEMISPHERE = "diffuser_hemisphere"
+
+    # Bass Traps
+    BASS_TRAP_CORNER = "bass_trap_corner"
+    BASS_TRAP_PANEL = "bass_trap_panel"
 
 
 class AcousticStandard(Enum):
-    """استانداردهای آکوستیک"""
-    ISO_3382 = "ISO 3382"                         # استاندارد اندازه‌گیری آکوستیک اتاق
-    ANSI_S12 = "ANSI S12"                         # استاندارد آمریکایی صدا
-    DIN_18041 = "DIN 18041"                       # استاندارد آلمانی آکوستیک اتاق
-    WHO_GUIDELINES = "WHO Guidelines"              # راهنمای سازمان بهداشت جهانی
-    BUILDING_CODE = "Building Code"                # ضوابط ملی ساختمان
+    """Enumeration for acoustic standards."""
+    ISO_3382 = "ISO 3382"  # Acoustics of rooms measurement standard
+    ANSI_S12 = "ANSI S12"  # American standard for noise
+    DIN_18041 = "DIN 18041"  # German standard for room acoustics
+    WHO_GUIDELINES = "WHO Guidelines"  # World Health Organization guidelines
+    BUILDING_CODE = "Building Code"  # National building codes
 
 
 @dataclass
 class AcousticMaterial:
-    """اطلاعات مواد آکوستیک"""
+    """
+    Stores information about an acoustic material.
+
+    Attributes:
+        material_type: The type of the acoustic material.
+        location: The (x, y) position of the material.
+        dimensions: The (width, height, thickness) of the material.
+        absorption_coefficient: Sound absorption coefficient (0-1).
+        nrc_rating: Noise Reduction Coefficient.
+        stc_rating: Sound Transmission Class.
+        thickness_mm: Thickness in millimeters.
+        layer: The DXF layer the material was found on.
+        coverage_area_m2: The coverage area in square meters.
+        properties: A dictionary for additional metadata.
+    """
     material_type: AcousticMaterialType
-    location: Tuple[float, float]                  # موقعیت (x, y)
-    dimensions: Tuple[float, float, float]         # ابعاد (عرض، ارتفاع، ضخامت)
-    absorption_coefficient: float = 0.0            # ضریب جذب صدا (0-1)
-    nrc_rating: float = 0.0                        # Noise Reduction Coefficient
-    stc_rating: int = 0                            # Sound Transmission Class
-    thickness_mm: float = 0.0                      # ضخامت به میلی‌متر
-    layer: str = ""                                # لایه در DXF
-    coverage_area_m2: float = 0.0                  # مساحت پوشش
+    location: Tuple[float, float]
+    dimensions: Tuple[float, float, float]
+    absorption_coefficient: float = 0.0
+    nrc_rating: float = 0.0
+    stc_rating: int = 0
+    thickness_mm: float = 0.0
+    layer: str = ""
+    coverage_area_m2: float = 0.0
     properties: Dict = field(default_factory=dict)
 
 
 @dataclass
 class AcousticSpace:
-    """اطلاعات فضای آکوستیک"""
+    """
+    Stores information about an acoustic space.
+
+    Attributes:
+        space_type: The type of the acoustic space.
+        name: The name of the space.
+        area_m2: Floor area in square meters.
+        volume_m3: Volume of the space in cubic meters.
+        height_m: Height of the space in meters.
+        boundary: A list of (x, y) tuples defining the space's perimeter.
+        rt60_target: Target reverberation time in seconds.
+        rt60_actual: Calculated actual reverberation time.
+        background_noise_db: Background noise level in dB.
+        max_spl_db: Maximum sound pressure level in dB.
+        materials: A list of AcousticMaterial objects within the space.
+        applicable_standards: A list of relevant acoustic standards.
+        acoustic_score: An overall score (0-100) for the space's acoustic quality.
+        compliance_status: The compliance status (e.g., 'excellent', 'poor').
+        layer: The DXF layer the space was found on.
+        properties: A dictionary for additional metadata.
+    """
     space_type: AcousticSpaceType
     name: str = ""
-    area_m2: float = 0.0                           # مساحت کف
-    volume_m3: float = 0.0                         # حجم فضا
-    height_m: float = 0.0                          # ارتفاع
+    area_m2: float = 0.0
+    volume_m3: float = 0.0
+    height_m: float = 0.0
     boundary: List[Tuple[float, float]] = field(default_factory=list)
-    
-    # پارامترهای آکوستیک
-    rt60_target: float = 0.0                       # زمان پسماند هدف (ثانیه)
-    rt60_actual: float = 0.0                       # زمان پسماند واقعی
-    background_noise_db: float = 0.0               # نویز پس‌زمینه (dB)
-    max_spl_db: float = 0.0                        # حداکثر سطح صدا (dB)
-    
-    # مواد نصب شده
+
+    # Acoustic Parameters
+    rt60_target: float = 0.0
+    rt60_actual: float = 0.0
+    background_noise_db: float = 0.0
+    max_spl_db: float = 0.0
+
+    # Installed Materials
     materials: List[AcousticMaterial] = field(default_factory=list)
-    
-    # استانداردها
+
+    # Standards
     applicable_standards: List[AcousticStandard] = field(default_factory=list)
-    
-    # امتیازدهی
-    acoustic_score: float = 0.0                    # امتیاز کلی (0-100)
-    compliance_status: str = "unknown"             # وضعیت انطباق
-    
+
+    # Scoring
+    acoustic_score: float = 0.0
+    compliance_status: str = "unknown"
+
     layer: str = ""
     properties: Dict = field(default_factory=dict)
 
 
 @dataclass
 class NoiseSource:
-    """منبع نویز"""
-    source_type: str                               # نوع منبع
+    """
+    Stores information about a noise source.
+
+    Attributes:
+        source_type: The type of the noise source (e.g., 'HVAC').
+        location: The (x, y) position of the source.
+        sound_power_level_db: The sound power level in dB.
+        frequency_range: The frequency range (min_hz, max_hz) of the source.
+        operating_hours: The operating hours of the source.
+        layer: The DXF layer the source was found on.
+    """
+    source_type: str
     location: Tuple[float, float]
-    sound_power_level_db: float                    # سطح قدرت صوتی (dB)
-    frequency_range: Tuple[float, float]           # محدوده فرکانسی (Hz)
-    operating_hours: str = "24/7"                  # ساعات کار
+    sound_power_level_db: float
+    frequency_range: Tuple[float, float]
+    operating_hours: str = "24/7"
     layer: str = ""
 
 
 @dataclass
 class AcousticAnalysisResult:
-    """نتیجه تحلیل آکوستیک"""
+    """
+    Container for the complete acoustic analysis result.
+
+    Attributes:
+        spaces: A list of detected AcousticSpace objects.
+        materials: A list of detected AcousticMaterial objects.
+        noise_sources: A list of detected NoiseSource objects.
+        total_spaces: Total number of detected acoustic spaces.
+        total_acoustic_area_m2: Total area of all acoustic spaces.
+        total_absorber_area_m2: Total area of all sound-absorbing materials.
+        total_insulation_area_m2: Total area of all sound-insulating materials.
+        average_acoustic_score: The average acoustic score across all spaces.
+        compliant_spaces: Number of spaces meeting compliance criteria.
+        non_compliant_spaces: Number of spaces not meeting compliance criteria.
+        warnings: A list of warnings generated during analysis.
+        recommendations: A list of recommendations for improvement.
+    """
     spaces: List[AcousticSpace]
     materials: List[AcousticMaterial]
     noise_sources: List[NoiseSource]
-    
-    # آمار کلی
+
+    # Overall Statistics
     total_spaces: int = 0
     total_acoustic_area_m2: float = 0.0
     total_absorber_area_m2: float = 0.0
     total_insulation_area_m2: float = 0.0
-    
-    # کیفیت آکوستیک
+
+    # Acoustic Quality
     average_acoustic_score: float = 0.0
     compliant_spaces: int = 0
     non_compliant_spaces: int = 0
-    
-    # هشدارها
+
+    # Alerts
     warnings: List[str] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
 
 
 class AcousticAnalyzer:
-    """تحلیل‌گر آکوستیک حرفه‌ای"""
-    
-    # استانداردهای RT60 (زمان پسماند در ثانیه)
+    """
+    A professional acoustic analyzer for processing CAD drawings.
+    """
+
+    # Reverberation Time (RT60) standards in seconds
     RT60_STANDARDS = {
         AcousticSpaceType.CONFERENCE_HALL: (0.6, 1.0),
         AcousticSpaceType.AUDITORIUM: (0.8, 1.2),
@@ -197,8 +266,8 @@ class AcousticAnalyzer:
         AcousticSpaceType.HOSPITAL_ROOM: (0.4, 0.6),
         AcousticSpaceType.SURGERY_ROOM: (0.3, 0.5),
     }
-    
-    # استانداردهای نویز پس‌زمینه (dB)
+
+    # Background noise standards in dB(A)
     BACKGROUND_NOISE_STANDARDS = {
         AcousticSpaceType.RECORDING_STUDIO: 20,
         AcousticSpaceType.BROADCAST_STUDIO: 25,
@@ -211,107 +280,90 @@ class AcousticAnalyzer:
         AcousticSpaceType.HOSPITAL_ROOM: 30,
         AcousticSpaceType.SURGERY_ROOM: 25,
     }
-    
+
     def __init__(self):
-        """مقداردهی اولیه تحلیل‌گر"""
+        """Initializes the analyzer."""
         self.spaces: List[AcousticSpace] = []
         self.materials: List[AcousticMaterial] = []
         self.noise_sources: List[NoiseSource] = []
-    
-    def detect_acoustic_spaces(self, doc: ezdxf.document.Drawing) -> List[AcousticSpace]:
+
+    def detect_acoustic_spaces(self, doc: Drawing) -> List[AcousticSpace]:
         """
-        تشخیص فضاهای آکوستیک از روی نقشه
-        
+        Detects acoustic spaces from the drawing.
+
         Args:
-            doc: سند DXF
-            
+            doc: The ezdxf Drawing object.
+
         Returns:
-            لیست فضاهای آکوستیک شناسایی شده
+            A list of detected AcousticSpace objects.
         """
         spaces = []
         msp = doc.modelspace()
-        
-        # جستجو در لایه‌های مختلف
+
         acoustic_layers = [
-            'ACOUSTIC', 'ACOUSTICS', 'SOUND',
-            'AUDITORIUM', 'STUDIO', 'HALL',
-            'CONFERENCE', 'THEATER', 'CINEMA',
-            'CLASSROOM', 'LECTURE'
+            'ACOUSTIC', 'SOUND', 'AUDITORIUM', 'STUDIO', 'HALL',
+            'CONFERENCE', 'THEATER', 'CINEMA', 'CLASSROOM', 'LECTURE'
         ]
-        
+
         for entity in msp:
-            layer_name = entity.dxf.layer.upper()
-            
-            # بررسی لایه
-            if not any(al in layer_name for al in acoustic_layers):
-                continue
-            
-            # تشخیص فضا از روی LWPOLYLINE یا POLYLINE
-            if entity.dxftype() in ['LWPOLYLINE', 'POLYLINE']:
-                if not entity.is_closed:
+            try:
+                layer_name = entity.dxf.layer.upper()
+
+                if not any(keyword in layer_name for keyword in acoustic_layers):
                     continue
-                
-                # استخراج مرز
-                points = []
-                if entity.dxftype() == 'LWPOLYLINE':
+
+                if isinstance(entity, LWPolyline) and entity.is_closed:
                     points = [(p[0], p[1]) for p in entity.get_points()]
-                
-                if len(points) < 3:
-                    continue
-                
-                # تشخیص نوع فضا
-                space_type = self._identify_space_type(layer_name, entity)
-                
-                # محاسبه مساحت
-                area = self._calculate_polygon_area(points)
-                
-                # ایجاد فضای آکوستیک
-                space = AcousticSpace(
-                    space_type=space_type,
-                    name=layer_name,
-                    area_m2=area / 1000000.0,  # تبدیل به متر مربع
-                    boundary=points,
-                    layer=entity.dxf.layer
-                )
-                
-                # تخمین حجم (فرض: ارتفاع 3 متر)
-                space.height_m = 3.0
-                space.volume_m3 = space.area_m2 * space.height_m
-                
-                # تنظیم استانداردها
-                space.applicable_standards = [
-                    AcousticStandard.ISO_3382,
-                    AcousticStandard.BUILDING_CODE
-                ]
-                
-                # تنظیم RT60 هدف
-                if space_type in self.RT60_STANDARDS:
-                    rt60_range = self.RT60_STANDARDS[space_type]
-                    space.rt60_target = (rt60_range[0] + rt60_range[1]) / 2
-                
-                # تنظیم نویز پس‌زمینه
-                if space_type in self.BACKGROUND_NOISE_STANDARDS:
-                    space.background_noise_db = self.BACKGROUND_NOISE_STANDARDS[space_type]
-                
-                spaces.append(space)
-        
+                    if len(points) < 3:
+                        continue
+
+                    space_type = self._identify_space_type(layer_name)
+                    area = self._calculate_polygon_area(points)
+
+                    # Convert area from mm^2 to m^2 if needed (assuming drawing units are mm)
+                    area_m2 = area / 1_000_000.0
+
+                    space = AcousticSpace(
+                        space_type=space_type,
+                        name=entity.dxf.layer,
+                        area_m2=area_m2,
+                        boundary=points,
+                        layer=entity.dxf.layer
+                    )
+
+                    # Estimate volume (assuming a default height of 3 meters)
+                    space.height_m = 3.0
+                    space.volume_m3 = space.area_m2 * space.height_m
+
+                    space.applicable_standards = [AcousticStandard.ISO_3382, AcousticStandard.BUILDING_CODE]
+
+                    if space_type in self.RT60_STANDARDS:
+                        rt60_range = self.RT60_STANDARDS[space_type]
+                        space.rt60_target = (rt60_range[0] + rt60_range[1]) / 2
+
+                    if space_type in self.BACKGROUND_NOISE_STANDARDS:
+                        space.background_noise_db = self.BACKGROUND_NOISE_STANDARDS[space_type]
+
+                    spaces.append(space)
+            except Exception as e:
+                logging.warning(f"Could not process entity {entity.dxf.handle} for space detection: {e}")
+
         self.spaces = spaces
         return spaces
-    
-    def detect_acoustic_materials(self, doc: ezdxf.document.Drawing) -> List[AcousticMaterial]:
+
+    def detect_acoustic_materials(self, doc: Drawing) -> List[AcousticMaterial]:
         """
-        تشخیص مواد آکوستیک
-        
+        Detects acoustic materials from the drawing.
+
         Args:
-            doc: سند DXF
-            
+            doc: The ezdxf Drawing object.
+
         Returns:
-            لیست مواد آکوستیک
+            A list of detected AcousticMaterial objects.
         """
         materials = []
         msp = doc.modelspace()
-        
-        # لایه‌های مواد آکوستیک
+
         material_keywords = {
             'ABSORBER': AcousticMaterialType.ABSORBER_PANEL,
             'FOAM': AcousticMaterialType.ABSORBER_FOAM,
@@ -322,75 +374,66 @@ class AcousticAnalyzer:
             'ACOUSTIC_PANEL': AcousticMaterialType.ABSORBER_PANEL,
             'SOUND_INSULATION': AcousticMaterialType.INSULATION_WALL,
         }
-        
+
         for entity in msp:
-            layer_name = entity.dxf.layer.upper()
-            
-            # تشخیص نوع ماده
-            material_type = None
-            for keyword, mat_type in material_keywords.items():
-                if keyword in layer_name:
-                    material_type = mat_type
-                    break
-            
-            if material_type is None:
-                continue
-            
-            # استخراج اطلاعات هندسی
-            if entity.dxftype() == 'INSERT':  # بلوک
-                location = (entity.dxf.insert.x, entity.dxf.insert.y)
-                dimensions = (1000.0, 1000.0, 50.0)  # پیش‌فرض
-                
-            elif entity.dxftype() in ['LWPOLYLINE', 'POLYLINE']:
-                points = []
-                if entity.dxftype() == 'LWPOLYLINE':
-                    points = [(p[0], p[1]) for p in entity.get_points()]
-                
-                if len(points) < 2:
+            try:
+                layer_name = entity.dxf.layer.upper()
+                material_type = next((mat_type for keyword, mat_type in material_keywords.items() if keyword in layer_name), None)
+
+                if material_type is None:
                     continue
-                
-                location = points[0]
-                
-                # محاسبه ابعاد
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                width = max(xs) - min(xs)
-                height = max(ys) - min(ys)
-                dimensions = (width, height, 50.0)
-                
-            else:
-                continue
-            
-            # ضرایب استاندارد
-            absorption_coeff = self._get_absorption_coefficient(material_type)
-            nrc = self._get_nrc_rating(material_type)
-            stc = self._get_stc_rating(material_type)
-            
-            # محاسبه مساحت پوشش
-            coverage_area = (dimensions[0] * dimensions[1]) / 1000000.0
-            
-            material = AcousticMaterial(
-                material_type=material_type,
-                location=location,
-                dimensions=dimensions,
-                absorption_coefficient=absorption_coeff,
-                nrc_rating=nrc,
-                stc_rating=stc,
-                thickness_mm=dimensions[2],
-                layer=entity.dxf.layer,
-                coverage_area_m2=coverage_area
-            )
-            
-            materials.append(material)
-        
+
+                location, dimensions = (0, 0), (0, 0, 0)
+                if isinstance(entity, Insert):  # Block
+                    location = (entity.dxf.insert.x, entity.dxf.insert.y)
+                    dimensions = (1000.0, 1000.0, 50.0)  # Default dimensions
+                elif isinstance(entity, LWPolyline):
+                    points = [(p[0], p[1]) for p in entity.get_points()]
+                    if len(points) < 2:
+                        continue
+                    location = points[0]
+                    xs, ys = [p[0] for p in points], [p[1] for p in points]
+                    width, height = max(xs) - min(xs), max(ys) - min(ys)
+                    dimensions = (width, height, 50.0)
+                else:
+                    continue
+
+                absorption_coeff = self._get_absorption_coefficient(material_type)
+                nrc = self._get_nrc_rating(material_type)
+                stc = self._get_stc_rating(material_type)
+                coverage_area = (dimensions[0] * dimensions[1]) / 1_000_000.0
+
+                material = AcousticMaterial(
+                    material_type=material_type,
+                    location=location,
+                    dimensions=dimensions,
+                    absorption_coefficient=absorption_coeff,
+                    nrc_rating=nrc,
+                    stc_rating=stc,
+                    thickness_mm=dimensions[2],
+                    layer=entity.dxf.layer,
+                    coverage_area_m2=coverage_area
+                )
+                materials.append(material)
+            except Exception as e:
+                logging.warning(f"Could not process entity {entity.dxf.handle} for material detection: {e}")
+
         self.materials = materials
         return materials
-    
-    def detect_noise_sources(self, doc: ezdxf.document.Drawing) -> List[NoiseSource]:
-        """تشخیص منابع نویز"""
+
+    def detect_noise_sources(self, doc: Drawing) -> List[NoiseSource]:
+        """
+        Detects noise sources from the drawing.
+
+        Args:
+            doc: The ezdxf Drawing object.
+
+        Returns:
+            A list of detected NoiseSource objects.
+        """
         noise_sources = []
         msp = doc.modelspace()
-        
+
         noise_keywords = {
             'HVAC': (70, (100, 2000)),
             'MECHANICAL': (75, (50, 5000)),
@@ -400,115 +443,122 @@ class AcousticAnalyzer:
             'FAN': (75, (200, 2000)),
             'PUMP': (80, (100, 2000)),
         }
-        
+
         for entity in msp:
-            layer_name = entity.dxf.layer.upper()
-            
-            for keyword, (spl, freq_range) in noise_keywords.items():
-                if keyword in layer_name:
-                    if entity.dxftype() == 'INSERT':
-                        location = (entity.dxf.insert.x, entity.dxf.insert.y)
-                    elif entity.dxftype() == 'CIRCLE':
-                        location = (entity.dxf.center.x, entity.dxf.center.y)
-                    else:
-                        continue
-                    
-                    source = NoiseSource(
-                        source_type=keyword,
-                        location=location,
-                        sound_power_level_db=spl,
-                        frequency_range=freq_range,
-                        layer=entity.dxf.layer
-                    )
-                    noise_sources.append(source)
-                    break
-        
+            try:
+                layer_name = entity.dxf.layer.upper()
+                for keyword, (spl, freq_range) in noise_keywords.items():
+                    if keyword in layer_name:
+                        location = (0, 0)
+                        if isinstance(entity, Insert):
+                            location = (entity.dxf.insert.x, entity.dxf.insert.y)
+                        elif isinstance(entity, Circle):
+                            location = (entity.dxf.center.x, entity.dxf.center.y)
+                        else:
+                            continue
+
+                        source = NoiseSource(
+                            source_type=keyword,
+                            location=location,
+                            sound_power_level_db=spl,
+                            frequency_range=freq_range,
+                            layer=entity.dxf.layer
+                        )
+                        noise_sources.append(source)
+                        break
+            except Exception as e:
+                logging.warning(f"Could not process entity {entity.dxf.handle} for noise source detection: {e}")
+
         self.noise_sources = noise_sources
         return noise_sources
-    
+
     def calculate_rt60(self, space: AcousticSpace) -> float:
         """
-        محاسبه زمان پسماند (RT60) با فرمول Sabine
-        
-        RT60 = 0.161 × V / A
-        V: حجم فضا (m³)
-        A: مساحت جذب معادل (m²)
+        Calculates Reverberation Time (RT60) using the Sabine formula.
+        RT60 = 0.161 * V / A
+        V: Volume of the space (m^3)
+        A: Total equivalent absorption area (m^2)
+
+        Args:
+            space: The AcousticSpace object to analyze.
+
+        Returns:
+            The calculated RT60 value in seconds.
         """
         if space.volume_m3 <= 0:
             return 0.0
-        
-        # مجموع مساحت جذب
-        total_absorption = 0.0
-        
-        for material in space.materials:
-            total_absorption += material.coverage_area_m2 * material.absorption_coefficient
-        
-        # اگر مواد جاذب نداریم، فرض کنیم ضریب جذب کم است
+
+        total_absorption = sum(m.coverage_area_m2 * m.absorption_coefficient for m in space.materials)
+
+        # If no absorbing materials are found, assume a low default absorption
         if total_absorption == 0:
-            total_absorption = space.area_m2 * 0.1  # فرض: 10% جذب
-        
-        # فرمول Sabine
-        rt60 = 0.161 * space.volume_m3 / total_absorption
-        
+            total_absorption = space.area_m2 * 0.1  # Assume 10% absorption
+
+        rt60 = (0.161 * space.volume_m3) / total_absorption
         return rt60
-    
+
     def calculate_acoustic_score(self, space: AcousticSpace) -> float:
-        """محاسبه امتیاز آکوستیک (0-100)"""
+        """
+        Calculates an acoustic score for a space (0-100).
+
+        Args:
+            space: The AcousticSpace object to score.
+
+        Returns:
+            A score from 0 to 100.
+        """
         score = 100.0
-        
-        # بررسی RT60
+
+        # Penalty for deviating from RT60 standard
         if space.space_type in self.RT60_STANDARDS:
             rt60_range = self.RT60_STANDARDS[space.space_type]
             rt60_actual = space.rt60_actual
-            
             if rt60_actual < rt60_range[0]:
                 score -= 20 * (rt60_range[0] - rt60_actual)
             elif rt60_actual > rt60_range[1]:
                 score -= 20 * (rt60_actual - rt60_range[1])
-        
-        # بررسی نویز پس‌زمینه
+
+        # Penalty for high background noise
         if space.space_type in self.BACKGROUND_NOISE_STANDARDS:
             max_noise = self.BACKGROUND_NOISE_STANDARDS[space.space_type]
             if space.background_noise_db > max_noise:
                 score -= 2 * (space.background_noise_db - max_noise)
-        
-        # بررسی مواد جاذب
-        if len(space.materials) == 0:
+
+        # Penalty for lack of absorbing materials
+        if not space.materials:
             score -= 30
-        
+
         return max(0.0, min(100.0, score))
-    
+
     def analyze(self, dxf_path: str) -> AcousticAnalysisResult:
         """
-        تحلیل کامل آکوستیک نقشه
-        
+        Performs a complete acoustic analysis of a DXF file.
+
         Args:
-            dxf_path: مسیر فایل DXF
-            
+            dxf_path: The path to the DXF file.
+
         Returns:
-            نتیجه تحلیل آکوستیک
+            An AcousticAnalysisResult object with the full analysis.
         """
-        doc = ezdxf.readfile(dxf_path)
-        
-        # تشخیص عناصر
+        logging.info(f"Starting acoustic analysis for: {dxf_path}")
+        try:
+            doc = ezdxf.readfile(dxf_path)
+        except IOError:
+            logging.error(f"Cannot open DXF file: {dxf_path}")
+            return AcousticAnalysisResult([], [], [])
+        except ezdxf.DXFStructureError:
+            logging.error(f"Invalid or corrupt DXF file: {dxf_path}")
+            return AcousticAnalysisResult([], [], [])
+
         spaces = self.detect_acoustic_spaces(doc)
         materials = self.detect_acoustic_materials(doc)
         noise_sources = self.detect_noise_sources(doc)
-        
-        # اختصاص مواد به فضاها
+
         for space in spaces:
-            space.materials = [
-                m for m in materials
-                if self._point_in_polygon(m.location, space.boundary)
-            ]
-            
-            # محاسبه RT60
+            space.materials = [m for m in materials if self._point_in_polygon(m.location, space.boundary)]
             space.rt60_actual = self.calculate_rt60(space)
-            
-            # محاسبه امتیاز
             space.acoustic_score = self.calculate_acoustic_score(space)
-            
-            # وضعیت انطباق
+
             if space.acoustic_score >= 80:
                 space.compliance_status = "excellent"
             elif space.acoustic_score >= 60:
@@ -517,41 +567,29 @@ class AcousticAnalyzer:
                 space.compliance_status = "fair"
             else:
                 space.compliance_status = "poor"
-        
-        # آمار کلی
+
         total_acoustic_area = sum(s.area_m2 for s in spaces)
-        total_absorber_area = sum(
-            m.coverage_area_m2 for m in materials
-            if 'ABSORBER' in m.material_type.name
-        )
-        total_insulation_area = sum(
-            m.coverage_area_m2 for m in materials
-            if 'INSULATION' in m.material_type.name
-        )
-        
-        avg_score = sum(s.acoustic_score for s in spaces) / len(spaces) if spaces else 0.0
+        total_absorber_area = sum(m.coverage_area_m2 for m in materials if 'ABSORBER' in m.material_type.name)
+        total_insulation_area = sum(m.coverage_area_m2 for m in materials if 'INSULATION' in m.material_type.name)
+        avg_score = (sum(s.acoustic_score for s in spaces) / len(spaces)) if spaces else 0.0
         compliant = sum(1 for s in spaces if s.acoustic_score >= 60)
         non_compliant = len(spaces) - compliant
-        
-        # هشدارها و توصیه‌ها
-        warnings = []
-        recommendations = []
-        
+
+        warnings, recommendations = [], []
         for space in spaces:
             if space.acoustic_score < 60:
-                warnings.append(f"فضای {space.name} نیاز به بهبود دارد (امتیاز: {space.acoustic_score:.1f})")
-            
+                warnings.append(f"Space '{space.name}' needs improvement (Score: {space.acoustic_score:.1f})")
             if space.rt60_actual > 0 and space.space_type in self.RT60_STANDARDS:
                 rt60_range = self.RT60_STANDARDS[space.space_type]
                 if space.rt60_actual > rt60_range[1]:
                     recommendations.append(
-                        f"{space.name}: افزودن جاذب صوتی برای کاهش RT60 از {space.rt60_actual:.2f}s به {rt60_range[1]:.2f}s"
+                        f"In '{space.name}', add sound absorbers to reduce RT60 from {space.rt60_actual:.2f}s to < {rt60_range[1]:.2f}s."
                     )
                 elif space.rt60_actual < rt60_range[0]:
                     recommendations.append(
-                        f"{space.name}: کاهش جاذب صوتی برای افزایش RT60 از {space.rt60_actual:.2f}s به {rt60_range[0]:.2f}s"
+                        f"In '{space.name}', reduce sound absorbers to increase RT60 from {space.rt60_actual:.2f}s to > {rt60_range[0]:.2f}s."
                     )
-        
+
         result = AcousticAnalysisResult(
             spaces=spaces,
             materials=materials,
@@ -566,11 +604,17 @@ class AcousticAnalyzer:
             warnings=warnings,
             recommendations=recommendations
         )
-        
+        logging.info(f"Analysis complete. Found {len(spaces)} spaces.")
         return result
-    
+
     def export_to_json(self, result: AcousticAnalysisResult, output_path: str):
-        """خروجی JSON"""
+        """
+        Exports the analysis result to a JSON file.
+
+        Args:
+            result: The AcousticAnalysisResult to export.
+            output_path: The path to the output JSON file.
+        """
         data = {
             'summary': {
                 'total_spaces': result.total_spaces,
@@ -581,119 +625,70 @@ class AcousticAnalyzer:
                 'compliant_spaces': result.compliant_spaces,
                 'non_compliant_spaces': result.non_compliant_spaces,
             },
-            'spaces': [
-                {
-                    'type': s.space_type.value,
-                    'name': s.name,
-                    'area_m2': s.area_m2,
-                    'volume_m3': s.volume_m3,
-                    'rt60_target': s.rt60_target,
-                    'rt60_actual': s.rt60_actual,
-                    'background_noise_db': s.background_noise_db,
-                    'acoustic_score': s.acoustic_score,
-                    'compliance_status': s.compliance_status,
-                    'materials_count': len(s.materials),
-                }
-                for s in result.spaces
-            ],
-            'materials': [
-                {
-                    'type': m.material_type.value,
-                    'location': m.location,
-                    'dimensions': m.dimensions,
-                    'absorption_coefficient': m.absorption_coefficient,
-                    'nrc_rating': m.nrc_rating,
-                    'stc_rating': m.stc_rating,
-                    'coverage_area_m2': m.coverage_area_m2,
-                }
-                for m in result.materials
-            ],
-            'noise_sources': [
-                {
-                    'type': n.source_type,
-                    'location': n.location,
-                    'sound_power_level_db': n.sound_power_level_db,
-                    'frequency_range': n.frequency_range,
-                }
-                for n in result.noise_sources
-            ],
+            'spaces': [s.__dict__ for s in result.spaces],
+            'materials': [m.__dict__ for m in result.materials],
+            'noise_sources': [ns.__dict__ for ns in result.noise_sources],
             'warnings': result.warnings,
             'recommendations': result.recommendations,
         }
-        
+
+        class EnumEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, Enum):
+                    return obj.value
+                return super().default(obj)
+
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    # متدهای کمکی
-    
-    def _identify_space_type(self, layer_name: str, entity) -> AcousticSpaceType:
-        """تشخیص نوع فضا از روی نام لایه"""
+            json.dump(data, f, cls=EnumEncoder, ensure_ascii=False, indent=2)
+        logging.info(f"Analysis report exported to {output_path}")
+
+    # --- Helper Methods ---
+
+    def _identify_space_type(self, layer_name: str) -> AcousticSpaceType:
+        """Identifies space type from layer name."""
         layer_upper = layer_name.upper()
-        
-        if 'CONCERT' in layer_upper or 'MUSIC_HALL' in layer_upper:
-            return AcousticSpaceType.CONCERT_HALL
-        elif 'AUDITORIUM' in layer_upper or 'AMPHITHEATER' in layer_upper:
-            return AcousticSpaceType.AUDITORIUM
-        elif 'CONFERENCE' in layer_upper:
-            return AcousticSpaceType.CONFERENCE_HALL
-        elif 'LECTURE' in layer_upper:
-            return AcousticSpaceType.LECTURE_HALL
-        elif 'THEATER' in layer_upper or 'THEATRE' in layer_upper:
-            return AcousticSpaceType.THEATER
-        elif 'CINEMA' in layer_upper or 'MOVIE' in layer_upper:
-            return AcousticSpaceType.CINEMA
-        elif 'RECORDING' in layer_upper or 'STUDIO' in layer_upper:
-            return AcousticSpaceType.RECORDING_STUDIO
-        elif 'BROADCAST' in layer_upper:
-            return AcousticSpaceType.BROADCAST_STUDIO
-        elif 'CONTROL' in layer_upper:
-            return AcousticSpaceType.CONTROL_ROOM
-        elif 'CLASSROOM' in layer_upper or 'CLASS' in layer_upper:
-            return AcousticSpaceType.CLASSROOM
-        elif 'LIBRARY' in layer_upper:
-            return AcousticSpaceType.LIBRARY
-        elif 'OFFICE' in layer_upper:
-            return AcousticSpaceType.OFFICE
-        elif 'MEETING' in layer_upper:
-            return AcousticSpaceType.MEETING_ROOM
-        else:
-            return AcousticSpaceType.UNKNOWN
-    
+        type_map = {
+            'CONCERT': AcousticSpaceType.CONCERT_HALL, 'MUSIC_HALL': AcousticSpaceType.CONCERT_HALL,
+            'AUDITORIUM': AcousticSpaceType.AUDITORIUM, 'AMPHITHEATER': AcousticSpaceType.AUDITORIUM,
+            'CONFERENCE': AcousticSpaceType.CONFERENCE_HALL,
+            'LECTURE': AcousticSpaceType.LECTURE_HALL,
+            'THEATER': AcousticSpaceType.THEATER, 'THEATRE': AcousticSpaceType.THEATER,
+            'CINEMA': AcousticSpaceType.CINEMA, 'MOVIE': AcousticSpaceType.CINEMA,
+            'RECORDING': AcousticSpaceType.RECORDING_STUDIO, 'STUDIO': AcousticSpaceType.RECORDING_STUDIO,
+            'BROADCAST': AcousticSpaceType.BROADCAST_STUDIO,
+            'CONTROL': AcousticSpaceType.CONTROL_ROOM,
+            'CLASSROOM': AcousticSpaceType.CLASSROOM, 'CLASS': AcousticSpaceType.CLASSROOM,
+            'LIBRARY': AcousticSpaceType.LIBRARY,
+            'OFFICE': AcousticSpaceType.OFFICE,
+            'MEETING': AcousticSpaceType.MEETING_ROOM,
+        }
+        return next((stype for keyword, stype in type_map.items() if keyword in layer_upper), AcousticSpaceType.UNKNOWN)
+
     def _calculate_polygon_area(self, points: List[Tuple[float, float]]) -> float:
-        """محاسبه مساحت چندضلعی با فرمول Shoelace"""
+        """Calculates polygon area using the Shoelace formula."""
         if len(points) < 3:
             return 0.0
-        
-        area = 0.0
-        for i in range(len(points)):
-            j = (i + 1) % len(points)
-            area += points[i][0] * points[j][1]
-            area -= points[j][0] * points[i][1]
-        
-        return abs(area) / 2.0
-    
+        area = 0.5 * abs(sum(p1[0]*p2[1] - p2[0]*p1[1] for p1, p2 in zip(points, points[1:] + [points[0]])))
+        return area
+
     def _point_in_polygon(self, point: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
-        """بررسی قرار گرفتن نقطه در چندضلعی (Ray Casting)"""
+        """Checks if a point is inside a polygon using the Ray Casting algorithm."""
         x, y = point
         n = len(polygon)
         inside = False
-        
         p1x, p1y = polygon[0]
         for i in range(1, n + 1):
             p2x, p2y = polygon[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
+            if y > min(p1y, p2y) and y <= max(p1y, p2y) and x <= max(p1x, p2x):
+                if p1y != p2y:
+                    xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                if p1x == p2x or x <= xinters:
+                    inside = not inside
             p1x, p1y = p2x, p2y
-        
         return inside
-    
+
     def _get_absorption_coefficient(self, material_type: AcousticMaterialType) -> float:
-        """ضریب جذب صدا (0-1)"""
+        """Returns a default absorption coefficient for a material type."""
         coefficients = {
             AcousticMaterialType.ABSORBER_FOAM: 0.85,
             AcousticMaterialType.ABSORBER_PANEL: 0.75,
@@ -709,9 +704,9 @@ class AcousticAnalyzer:
             AcousticMaterialType.BASS_TRAP_PANEL: 0.75,
         }
         return coefficients.get(material_type, 0.30)
-    
+
     def _get_nrc_rating(self, material_type: AcousticMaterialType) -> float:
-        """NRC Rating (Noise Reduction Coefficient)"""
+        """Returns a default NRC rating for a material type."""
         nrc_values = {
             AcousticMaterialType.ABSORBER_FOAM: 0.90,
             AcousticMaterialType.ABSORBER_PANEL: 0.80,
@@ -720,9 +715,9 @@ class AcousticAnalyzer:
             AcousticMaterialType.BASS_TRAP_CORNER: 0.85,
         }
         return nrc_values.get(material_type, 0.50)
-    
+
     def _get_stc_rating(self, material_type: AcousticMaterialType) -> int:
-        """STC Rating (Sound Transmission Class)"""
+        """Returns a default STC rating for a material type."""
         stc_values = {
             AcousticMaterialType.INSULATION_WALL: 50,
             AcousticMaterialType.INSULATION_FLOOR: 55,
@@ -734,19 +729,26 @@ class AcousticAnalyzer:
 
 
 def create_acoustic_analyzer() -> AcousticAnalyzer:
-    """ایجاد تحلیل‌گر آکوستیک"""
+    """Factory function to create an AcousticAnalyzer instance."""
     return AcousticAnalyzer()
 
 
 if __name__ == "__main__":
-    # تست سریع
     print("🎵 Acoustic Analysis System")
     print("=" * 60)
-    print(f"✅ {len(AcousticSpaceType)} space types")
-    print(f"✅ {len(AcousticMaterialType)} material types")
-    print(f"✅ {len(AcousticStandard)} acoustic standards")
-    print("\n📊 RT60 Standards:")
-    analyzer = AcousticAnalyzer()
+    print(f"✅ {len(AcousticSpaceType)} space types defined.")
+    print(f"✅ {len(AcousticMaterialType)} material types defined.")
+    print(f"✅ {len(AcousticStandard)} acoustic standards referenced.")
+    print("\n📊 Example RT60 Standards:")
+    analyzer = create_acoustic_analyzer()
     for space_type, (min_rt, max_rt) in list(analyzer.RT60_STANDARDS.items())[:5]:
         print(f"   - {space_type.value}: {min_rt}-{max_rt}s")
     print("\n✨ Ready for acoustic analysis!")
+
+    # Example usage:
+    # analyzer = create_acoustic_analyzer()
+    # try:
+    #     analysis_result = analyzer.analyze("path/to/your/drawing.dxf")
+    #     analyzer.export_to_json(analysis_result, "acoustic_report.json")
+    # except FileNotFoundError:
+    #     print("\nError: Example DXF file not found. Please provide a valid path.")

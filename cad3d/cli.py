@@ -1,1105 +1,1055 @@
+"""
+Command-Line Interface for the CAD 2D to 3D Conversion Toolkit.
+
+This module provides a single entry point (`cad3d`) for various offline
+conversion and analysis tools, including:
+- Extruding 2D DXF polylines into 3D meshes.
+- Converting between DXF and DWG formats using the ODA File Converter.
+- Generating 3D meshes from single images via depth estimation (MiDaS).
+- Batch processing entire directories of CAD files.
+- Advanced AI-driven tools for converting PDFs and images to CAD formats.
+- Training and optimizing neural network models for CAD object detection.
+- A deep-hybrid model combining ViT, VAE, and Diffusion for 3D generation.
+
+The CLI is designed to be extensible, with each major function exposed as a
+subcommand. It handles argument parsing, dispatches to the appropriate backend
+functions, and manages reporting for operations like batch processing and hard
+shape detection.
+
+Examples:
+    Extrude a DXF file:
+    $ python -m cad3d.cli dxf-extrude --input plan.dxf --output plan_3d.dxf --height 3000
+
+    Convert an image to a 3D mesh:
+    $ python -m cad3d.cli img-to-3d --input photo.jpg --output photo_3d.dxf
+
+    Run a batch extrusion job:
+    $ python -m cad3d.cli batch-extrude --input-dir ./in --output-dir ./out --jobs 4
+"""
 from __future__ import annotations
 import argparse
+import csv
+import json
+import time
+import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
-from .config import settings
+from .config import AppSettings
 from .dxf_extrude import extrude_dxf_closed_polylines
-from .dwg_io import convert_dxf_to_dwg
-# Lazily import image_to_depth only when needed to avoid heavy deps during CLI import
+from .dwg_io import convert_dxf_to_dwg, convert_dwg_to_dxf
+
+# Lazily import heavy dependencies to keep CLI startup fast
+# image_to_depth, neural_cad_detector, etc., are imported inside their handlers.
 
 
 def _positive_float(x: str) -> float:
+    """Argparse type for a positive float."""
     v = float(x)
     if v <= 0:
         raise argparse.ArgumentTypeError("must be > 0")
     return v
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="cad3d", description="Offline 2D->3D CAD tools")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def _setup_core_parsers(sub: argparse._SubParsersAction, settings: AppSettings) -> None:
+    """
+    Set up argparse subparsers for core CAD conversion and extrusion tasks.
 
-    p_ex = sub.add_parser("dxf-extrude", help="Extrude closed polylines in DXF to 3D MESH")
-    p_ex.add_argument("--input", required=True, help="Input DXF path")
-    p_ex.add_argument("--output", required=True, help="Output DXF path")
-    p_ex.add_argument("--height", type=_positive_float, default=settings.default_height, help="Extrusion height in drawing units")
-    p_ex.add_argument("--layers", nargs="*", help="Only extrude polylines on these layers")
-    p_ex.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size")
-    p_ex.add_argument("--arc-segments", type=int, default=12, help="Segments to approximate arc bulges (higher=smoother)")
-    p_ex.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling: max segment length (drawing units)")
-    p_ex.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines (self-intersections, zero-length edges, tiny area, duplicates)")
-    p_ex.add_argument("--hard-report-csv", help="Write CSV diagnostics for skipped hard shapes")
-    p_ex.add_argument("--hard-report-json", help="Write JSON diagnostics for skipped hard shapes")
-    p_ex.add_argument("--colorize", action="store_true", help="Apply mesh colors from source entities or layers")
-    p_ex.add_argument("--split-by-color", action="store_true", help="Place meshes on per-color layers like <layer>__COLOR_R_G_B")
-    p_ex.add_argument("--color-report-csv", help="Write CSV color summary for produced meshes")
-    p_ex.add_argument("--color-report-json", help="Write JSON color summary for produced meshes")
+    Args:
+        sub: The subparser action object from argparse.
+        settings: The application settings instance.
+    """
+    # --- dxf-extrude ---
+    p_ex = sub.add_parser("dxf-extrude", help="Extrude closed polylines in a DXF file to 3D MESH entities.")
+    p_ex.add_argument("--input", required=True, help="Input DXF path.")
+    p_ex.add_argument("--output", required=True, help="Output DXF path.")
+    p_ex.add_argument("--height", type=_positive_float, default=settings.default_extrude_height, help="Extrusion height in drawing units.")
+    p_ex.add_argument("--layers", nargs="*", help="Only extrude polylines on these specific layers.")
+    p_ex.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce final mesh size.")
+    p_ex.add_argument("--arc-segments", type=int, default=12, help="Number of segments to approximate arc bulges (higher is smoother).")
+    p_ex.add_argument("--arc-max-seglen", type=float, help="Use adaptive arc sampling with a max segment length (in drawing units). Overrides --arc-segments.")
+    p_ex.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines (e.g., self-intersections, zero-area).")
+    p_ex.add_argument("--hard-report-csv", help="Path to write a CSV diagnostic report for skipped hard shapes.")
+    p_ex.add_argument("--hard-report-json", help="Path to write a JSON diagnostic report for skipped hard shapes.")
+    p_ex.add_argument("--colorize", action="store_true", help="Apply colors to meshes from source entities or layers.")
+    p_ex.add_argument("--split-by-color", action="store_true", help="Create new layers for each color in the format <layer>__COLOR_R_G_B.")
+    p_ex.add_argument("--color-report-csv", help="Path to write a CSV summary of mesh colors.")
+    p_ex.add_argument("--color-report-json", help="Path to write a JSON report of mesh colors.")
 
-    p_conv = sub.add_parser("dxf-to-dwg", help="Convert DXF to DWG via ODA File Converter")
-    p_conv.add_argument("--input", required=True, help="Input DXF path")
-    p_conv.add_argument("--output", required=True, help="Output DWG path")
-    p_conv.add_argument("--version", default="ACAD2018", help="DWG output version (e.g., ACAD2013, ACAD2018, ACAD2024)")
+    # --- dxf-to-dwg ---
+    p_conv = sub.add_parser("dxf-to-dwg", help="Convert a DXF file to DWG format using the ODA File Converter.")
+    p_conv.add_argument("--input", required=True, help="Input DXF path.")
+    p_conv.add_argument("--output", required=True, help="Output DWG path.")
+    p_conv.add_argument("--version", default="ACAD2018", help="DWG output version (e.g., ACAD2013, ACAD2018).")
 
-    p_img = sub.add_parser("img-to-3d", help="Convert single image to 3D DXF mesh using ONNX depth model")
-    p_img.add_argument("--input", required=True, help="Input image path")
-    p_img.add_argument("--output", required=True, help="Output DXF path")
-    p_img.add_argument("--scale", type=_positive_float, default=1000.0, help="Depth scale for Z values")
-    p_img.add_argument("--model-path", help="Override ONNX model path (else MIDAS_ONNX_PATH env is used)")
-    p_img.add_argument("--size", type=int, default=256, help="ONNX input size (MiDaS small default 256)")
-    p_img.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size")
+    # --- img-to-3d ---
+    p_img = sub.add_parser("img-to-3d", help="Convert a single image to a 3D DXF mesh using a depth estimation model (MiDaS).")
+    p_img.add_argument("--input", required=True, help="Input image path.")
+    p_img.add_argument("--output", required=True, help="Output DXF path.")
+    p_img.add_argument("--scale", type=_positive_float, default=1000.0, help="Depth scale factor for Z-axis values.")
+    p_img.add_argument("--model-path", help="Override path to the ONNX model (otherwise, MIDAS_ONNX_PATH environment variable is used).")
+    p_img.add_argument("--size", type=int, default=256, help="Input image size for the ONNX model (MiDaS small default is 256).")
+    p_img.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce final mesh size.")
 
-    # Auto-extrude: accepts DXF or DWG input and produces DXF or DWG output
-    p_auto = sub.add_parser("auto-extrude", help="Extrude 2D CAD (DXF/DWG) to 3D and write DXF/DWG")
-    p_auto.add_argument("--input", required=True, help="Input DXF or DWG path")
-    p_auto.add_argument("--output", required=True, help="Output DXF or DWG path")
-    p_auto.add_argument("--height", type=_positive_float, default=settings.default_height, help="Extrusion height in drawing units")
-    p_auto.add_argument("--layers", nargs="*", help="Only extrude polylines on these layers")
-    p_auto.add_argument("--arc-segments", type=int, default=12, help="Segments to approximate arc bulges (higher=smoother)")
-    p_auto.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling: max segment length (drawing units)")
-    p_auto.add_argument("--keep-temp", action="store_true", help="Keep temporary DXF files for debugging")
-    p_auto.add_argument("--dwg-version", default="ACAD2018", help="DWG/DXF version for conversions (ACAD2013/2018/2024)")
-    p_auto.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size")
-    p_auto.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines")
-    p_auto.add_argument("--hard-report-csv", help="Write CSV diagnostics for skipped hard shapes")
-    p_auto.add_argument("--hard-report-json", help="Write JSON diagnostics for skipped hard shapes")
-    p_auto.add_argument("--colorize", action="store_true", help="Apply mesh colors from source entities or layers")
-    p_auto.add_argument("--split-by-color", action="store_true", help="Place meshes on per-color layers like <layer>__COLOR_R_G_B")
-    p_auto.add_argument("--color-report-csv", help="Write CSV color summary for produced meshes")
-    p_auto.add_argument("--color-report-json", help="Write JSON color summary for produced meshes")
 
-    # Batch-extrude: process folder of files
-    p_batch = sub.add_parser("batch-extrude", help="Batch extrude a folder of DXF/DWG files")
-    p_batch.add_argument("--input-dir", required=True, help="Input folder containing DXF/DWG")
-    p_batch.add_argument("--output-dir", required=True, help="Output folder for DXF/DWG results")
-    p_batch.add_argument("--out-format", choices=["DXF", "DWG"], default="DXF", help="Output file format")
-    p_batch.add_argument("--height", type=_positive_float, default=settings.default_height, help="Extrusion height in drawing units")
-    p_batch.add_argument("--layers", nargs="*", help="Only extrude polylines on these layers")
-    p_batch.add_argument("--arc-segments", type=int, default=12, help="Segments to approximate arc bulges (higher=smoother)")
-    p_batch.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling: max segment length (drawing units)")
-    p_batch.add_argument("--recurse", action="store_true", help="Recurse into subdirectories")
-    p_batch.add_argument("--pattern", nargs="+", default=["*.dxf", "*.dwg"], help="File glob patterns to include")
-    p_batch.add_argument("--dwg-version", default="ACAD2018", help="DWG/DXF version for conversions (ACAD2013/2018/2024)")
-    p_batch.add_argument("--skip-existing", action="store_true", help="Skip if output already exists")
-    p_batch.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size")
-    p_batch.add_argument("--report-csv", help="Write a CSV report of processed files")
-    p_batch.add_argument("--report-json", help="Write a JSON report of processed files")
-    p_batch.add_argument("--jobs", type=int, default=1, help="Parallel workers (use >1 with care)")
-    p_batch.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines")
-    p_batch.add_argument("--hard-report-csv", help="Write CSV diagnostics for skipped hard shapes across the batch")
-    p_batch.add_argument("--hard-report-json", help="Write JSON diagnostics for skipped hard shapes across the batch")
-    p_batch.add_argument("--colorize", action="store_true", help="Apply mesh colors from source entities or layers")
-    p_batch.add_argument("--split-by-color", action="store_true", help="Place meshes on per-color layers like <layer>__COLOR_R_G_B")
-    p_batch.add_argument("--color-report-csv", help="Write CSV color summary across the batch")
-    p_batch.add_argument("--color-report-json", help="Write JSON color summary across the batch")
+def _setup_workflow_parsers(sub: argparse._SubParsersAction, settings: AppSettings) -> None:
+    """
+    Set up argparse subparsers for automated and batch processing workflows.
 
-    # Architectural analysis command
-    p_analyze = sub.add_parser("analyze-architectural", help="Analyze architectural drawings (plans, elevations, sections)")
-    p_analyze.add_argument("--input", required=True, help="Input DXF file or folder")
-    p_analyze.add_argument("--output-dir", required=True, help="Output directory for analysis results")
-    p_analyze.add_argument("--recursive", action="store_true", help="Process folder recursively")
-    p_analyze.add_argument("--export-json", action="store_true", help="Export full dataset to JSON")
-    p_analyze.add_argument("--export-csv", action="store_true", help="Export rooms data to CSV")
-    p_analyze.add_argument("--report", action="store_true", help="Generate text reports for each drawing")
+    Args:
+        sub: The subparser action object from argparse.
+        settings: The application settings instance.
+    """
+    # --- auto-extrude (DXF/DWG in -> DXF/DWG out) ---
+    p_auto = sub.add_parser("auto-extrude", help="Automatically extrude a 2D CAD file (DXF/DWG) to a 3D file (DXF/DWG).")
+    p_auto.add_argument("--input", required=True, help="Input DXF or DWG path.")
+    p_auto.add_argument("--output", required=True, help="Output DXF or DWG path.")
+    p_auto.add_argument("--height", type=_positive_float, default=settings.default_extrude_height, help="Extrusion height in drawing units.")
+    p_auto.add_argument("--layers", nargs="*", help="Only extrude polylines on these specific layers.")
+    p_auto.add_argument("--arc-segments", type=int, default=12, help="Segments for arc approximation.")
+    p_auto.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling max segment length.")
+    p_auto.add_argument("--keep-temp", action="store_true", help="Keep temporary DXF files for debugging purposes.")
+    p_auto.add_argument("--dwg-version", default="ACAD2018", help="DWG/DXF version for conversions.")
+    p_auto.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size.")
+    p_auto.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines.")
+    p_auto.add_argument("--hard-report-csv", help="Path to write a CSV report for skipped shapes.")
+    p_auto.add_argument("--hard-report-json", help="Path to write a JSON report for skipped shapes.")
+    p_auto.add_argument("--colorize", action="store_true", help="Apply colors to meshes.")
+    p_auto.add_argument("--split-by-color", action="store_true", help="Place meshes on per-color layers.")
+    p_auto.add_argument("--color-report-csv", help="Path to write a CSV color summary.")
+    p_auto.add_argument("--color-report-json", help="Path to write a JSON color report.")
 
-    # Neural AI commands
-    p_pdf = sub.add_parser("pdf-to-dxf", help="تبدیل PDF به DXF با شبکه عصبی")
-    p_pdf.add_argument("--input", required=True, help="مسیر فایل PDF")
-    p_pdf.add_argument("--output", required=True, help="مسیر خروجی DXF")
-    p_pdf.add_argument("--dpi", type=int, default=300, help="وضوح تبدیل (300-600)")
-    p_pdf.add_argument("--confidence", type=float, default=0.5, help="حداقل اطمینان detection (0-1)")
-    p_pdf.add_argument("--scale", type=float, default=1.0, help="مقیاس mm per pixel")
-    p_pdf.add_argument("--device", default="auto", help="cpu, cuda, or auto")
+    # --- batch-extrude ---
+    p_batch = sub.add_parser("batch-extrude", help="Batch extrude a folder of DXF/DWG files in parallel.")
+    p_batch.add_argument("--input-dir", required=True, help="Input folder containing DXF/DWG files.")
+    p_batch.add_argument("--output-dir", required=True, help="Output folder for the results.")
+    p_batch.add_argument("--out-format", choices=["DXF", "DWG"], default="DXF", help="Output file format.")
+    p_batch.add_argument("--height", type=_positive_float, default=settings.default_extrude_height, help="Extrusion height.")
+    p_batch.add_argument("--layers", nargs="*", help="Layers to extrude.")
+    p_batch.add_argument("--arc-segments", type=int, default=12, help="Segments for arc approximation.")
+    p_batch.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling max segment length.")
+    p_batch.add_argument("--recurse", action="store_true", help="Recurse into subdirectories.")
+    p_batch.add_argument("--pattern", nargs="+", default=["*.dxf", "*.dwg"], help="File glob patterns to include.")
+    p_batch.add_argument("--dwg-version", default="ACAD2018", help="DWG/DXF version for conversions.")
+    p_batch.add_argument("--skip-existing", action="store_true", help="Skip processing if the output file already exists.")
+    p_batch.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices.")
+    p_batch.add_argument("--report-csv", help="Path to write a CSV report of all processed files.")
+    p_batch.add_argument("--report-json", help="Path to write a JSON report of all processed files.")
+    p_batch.add_argument("--jobs", type=int, default=1, help="Number of parallel workers to use.")
+    p_batch.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines.")
+    p_batch.add_argument("--hard-report-csv", help="Path to write a consolidated CSV report for all skipped shapes.")
+    p_batch.add_argument("--hard-report-json", help="Path to write a consolidated JSON report for all skipped shapes.")
+    p_batch.add_argument("--colorize", action="store_true", help="Apply colors to meshes.")
+    p_batch.add_argument("--split-by-color", action="store_true", help="Place meshes on per-color layers.")
+    p_batch.add_argument("--color-report-csv", help="Path to write a consolidated CSV color summary.")
+    p_batch.add_argument("--color-report-json", help="Path to write a consolidated JSON color report.")
 
-    p_img_detect = sub.add_parser("image-to-dxf", help="تبدیل عکس نقشه به DXF با AI")
-    p_img_detect.add_argument("--input", required=True, help="مسیر عکس نقشه")
-    p_img_detect.add_argument("--output", required=True, help="مسیر خروجی DXF")
-    p_img_detect.add_argument("--confidence", type=float, default=0.5, help="حداقل اطمینان detection")
-    p_img_detect.add_argument("--scale", type=float, default=1.0, help="مقیاس mm per pixel")
-    p_img_detect.add_argument("--detect-lines", action="store_true", default=True, help="تشخیص خطوط")
-    p_img_detect.add_argument("--detect-circles", action="store_true", default=True, help="تشخیص دایره‌ها")
-    p_img_detect.add_argument("--detect-text", action="store_true", default=True, help="تشخیص متن با OCR")
-    p_img_detect.add_argument("--device", default="auto", help="cpu, cuda, or auto")
 
-    p_pdf3d = sub.add_parser("pdf-to-3d", help="تبدیل PDF به 3D DXF با هوش مصنوعی")
-    p_pdf3d.add_argument("--input", required=True, help="مسیر فایل PDF")
-    p_pdf3d.add_argument("--output", required=True, help="مسیر خروجی 3D DXF")
-    p_pdf3d.add_argument("--dpi", type=int, default=300, help="وضوح تبدیل")
-    p_pdf3d.add_argument("--intelligent-height", action="store_true", help="استفاده از ML برای پیش‌بینی ارتفاع")
-    p_pdf3d.add_argument("--device", default="auto", help="cpu, cuda, or auto")
+def _setup_ai_parsers(sub: argparse._SubParsersAction, settings: AppSettings) -> None:
+    """
+    Set up argparse subparsers for AI-driven conversion and analysis tasks.
 
-    # Training commands
-    p_build_ds = sub.add_parser("build-dataset", help="ساخت Dataset آموزشی از فایل‌های DXF")
-    p_build_ds.add_argument("--input-dir", required=True, help="پوشه حاوی فایل‌های DXF")
-    p_build_ds.add_argument("--output-dir", required=True, help="پوشه خروجی Dataset")
-    p_build_ds.add_argument("--image-size", type=int, nargs=2, default=[1024, 1024], help="اندازه تصویر (width height)")
-    p_build_ds.add_argument("--format", choices=["coco", "yolo", "both"], default="coco", help="فرمت خروجی")
-    p_build_ds.add_argument("--visualize", action="store_true", help="ذخیره تصاویر بررسی annotation")
-    p_build_ds.add_argument("--recurse", action="store_true", help="جستجوی زیرپوشه‌ها")
+    Args:
+        sub: The subparser action object from argparse.
+        settings: The application settings instance.
+    """
+    # --- AI-driven 2D Vectorization ---
+    p_pdf = sub.add_parser("pdf-to-dxf", help="Convert a PDF to DXF using a neural network for object detection.")
+    p_pdf.add_argument("--input", required=True, help="Input PDF file path.")
+    p_pdf.add_argument("--output", required=True, help="Output DXF file path.")
+    p_pdf.add_argument("--dpi", type=int, default=300, help="Rendering resolution for the PDF (300-600 DPI).")
+    p_pdf.add_argument("--confidence", type=float, default=0.5, help="Minimum detection confidence threshold (0-1).")
+    p_pdf.add_argument("--scale", type=float, default=1.0, help="Scale factor in millimeters per pixel.")
+    p_pdf.add_argument("--device", default="auto", help="Computation device: 'cpu', 'cuda', or 'auto'.")
 
-    p_train = sub.add_parser("train", help="آموزش مدل تشخیص CAD")
-    p_train.add_argument("--dataset-dir", required=True, help="پوشه Dataset (COCO format)")
-    p_train.add_argument("--output-dir", required=True, help="پوشه خروجی checkpoints")
-    p_train.add_argument("--epochs", type=int, default=50, help="تعداد epochs")
-    p_train.add_argument("--batch-size", type=int, default=4, help="اندازه batch")
-    p_train.add_argument("--lr", type=float, default=0.001, help="learning rate")
-    p_train.add_argument("--device", default="cuda", help="cpu یا cuda")
-    p_train.add_argument("--workers", type=int, default=4, help="تعداد data loader workers")
-    p_train.add_argument("--optimizer", choices=["sgd", "adam"], default="sgd", help="نوع optimizer")
-    p_train.add_argument("--resume", help="مسیر checkpoint برای ادامه آموزش")
-    p_train.add_argument("--pretrained", action="store_true", help="استفاده از pre-trained weights")
+    p_img_detect = sub.add_parser("image-to-dxf", help="Convert a drawing image to DXF using AI-based detection.")
+    p_img_detect.add_argument("--input", required=True, help="Input image path of the drawing.")
+    p_img_detect.add_argument("--output", required=True, help="Output DXF file path.")
+    p_img_detect.add_argument("--confidence", type=float, default=0.5, help="Minimum detection confidence.")
+    p_img_detect.add_argument("--scale", type=float, default=1.0, help="Scale factor in millimeters per pixel.")
+    p_img_detect.add_argument("--detect-lines", action="store_true", default=True, help="Enable line detection.")
+    p_img_detect.add_argument("--detect-circles", action="store_true", default=True, help="Enable circle detection.")
+    p_img_detect.add_argument("--detect-text", action="store_true", default=True, help="Enable text detection via OCR.")
+    p_img_detect.add_argument("--device", default="auto", help="Computation device: 'cpu', 'cuda', or 'auto'.")
 
-    # Optimization commands
-    p_optimize = sub.add_parser("optimize-model", help="بهینه‌سازی مدل برای استقرار (ONNX/TensorRT/Quantization)")
-    p_optimize.add_argument("--model", required=True, help="مسیر مدل PyTorch (.pth)")
-    p_optimize.add_argument("--output-dir", required=True, help="پوشه خروجی مدل‌های بهینه‌شده")
-    p_optimize.add_argument("--formats", nargs="+", choices=["onnx", "tensorrt", "quantized"], default=["onnx"], help="فرمت‌های خروجی")
-    p_optimize.add_argument("--input-size", type=int, nargs=2, default=[1024, 1024], help="اندازه ورودی (height width)")
-    p_optimize.add_argument("--benchmark", action="store_true", help="اجرای benchmark")
-    p_optimize.add_argument("--device", default="cuda", help="cpu یا cuda")
+    # --- AI-driven 3D Conversion ---
+    p_pdf3d = sub.add_parser("pdf-to-3d", help="Convert a PDF to a 3D DXF file using AI.")
+    p_pdf3d.add_argument("--input", required=True, help="Input PDF file path.")
+    p_pdf3d.add_argument("--output", required=True, help="Output 3D DXF file path.")
+    p_pdf3d.add_argument("--dpi", type=int, default=300, help="Rendering resolution for the PDF.")
+    p_pdf3d.add_argument("--intelligent-height", action="store_true", help="Use an ML model to predict extrusion heights.")
+    p_pdf3d.add_argument("--device", default="auto", help="Computation device: 'cpu', 'cuda', or 'auto'.")
 
-    p_benchmark = sub.add_parser("benchmark", help="ارزیابی دقت و سرعت مدل")
-    p_benchmark.add_argument("--model", required=True, help="مسیر مدل (.pth, .onnx, .trt)")
-    p_benchmark.add_argument("--dataset-dir", required=True, help="پوشه Dataset (COCO format)")
-    p_benchmark.add_argument("--output-dir", required=True, help="پوشه خروجی نتایج")
-    p_benchmark.add_argument("--model-format", choices=["pytorch", "onnx", "tensorrt"], default="pytorch", help="فرمت مدل")
-    p_benchmark.add_argument("--batch-size", type=int, default=1, help="اندازه batch")
-    p_benchmark.add_argument("--max-samples", type=int, help="حداکثر تعداد نمونه برای ارزیابی")
-    p_benchmark.add_argument("--device", default="cuda", help="cpu یا cuda")
+    # --- Deep Hybrid Model ---
+    p_hybrid = sub.add_parser("deep-hybrid", help="Generate a 3D point cloud from an image using a ViT+VAE+Diffusion tri-fusion model.")
+    p_hybrid.add_argument("--input", required=True, help="Input image path.")
+    p_hybrid.add_argument("--output", required=True, help="Output DXF path for the point cloud.")
+    p_hybrid.add_argument("--prior-strength", type=float, default=0.5, help="Blend ratio for VAE prior vs. noise (0=noise only, 1=prior only).")
+    p_hybrid.add_argument("--ddim-steps", type=int, default=40, help="Number of DDIM sampling steps for the diffusion model.")
+    p_hybrid.add_argument("--normalize-range", type=float, nargs=2, default=[0.0, 1000.0], help="Min and max for normalizing output CAD units.")
+    p_hybrid.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices before writing (for future mesh conversion).")
 
-    # Universal convert: accept image/PDF/DXF/DWG in, output DXF or DWG
-    p_uni = sub.add_parser("universal-convert", help="ورودی تصویر/PDF/DXF/DWG و خروجی DXF/DWG")
-    p_uni.add_argument("--input", required=True, help="مسیر ورودی (تصویر/PDF/DXF/DWG)")
-    p_uni.add_argument("--output", required=True, help="مسیر خروجی (DXF/DWG)")
-    p_uni.add_argument("--dpi", type=int, default=300, help="DPI برای PDF")
-    p_uni.add_argument("--confidence", type=float, default=0.5, help="حداقل اطمینان شبکه")
-    p_uni.add_argument("--scale", type=float, default=1.0, help="مقیاس mm/pixel برای تصویر")
-    p_uni.add_argument("--device", default="auto", help="cpu, cuda, or auto")
-    p_uni.add_argument("--dwg-version", default="ACAD2018", help="ورژن خروجی DWG")
-    # 3D extrusion options
-    p_uni.add_argument("--to-3d", action="store_true", help="پس از بردارسازی/ورود، اکستروژن سه‌بعدی انجام شود")
-    p_uni.add_argument("--height", type=_positive_float, default=settings.default_height, help="ارتفاع اکستروژن")
-    p_uni.add_argument("--layers", nargs="*", help="فقط لایه‌های مشخص اکستروژن شوند")
-    p_uni.add_argument("--arc-segments", type=int, default=12, help="تعداد قطعات تقریب قوس")
-    p_uni.add_argument("--arc-max-seglen", type=float, help="طول بیشینه قطعه قوس برای نمونه‌برداری تطبیقی")
-    p_uni.add_argument("--optimize-vertices", action="store_true", help="حذف رئوس تکراری برای کاهش حجم")
-    p_uni.add_argument("--detect-hard-shapes", action="store_true", help="شناسایی پلی‌لاین‌های مشکل‌دار و رد کردن آنها")
+    # --- Universal Converter ---
+    p_uni = sub.add_parser("universal-convert", help="Universal converter: input image/PDF/DXF/DWG, output DXF/DWG, with optional 3D extrusion.")
+    p_uni.add_argument("--input", required=True, help="Input path (image, PDF, DXF, or DWG).")
+    p_uni.add_argument("--output", required=True, help="Output path (DXF or DWG).")
+    p_uni.add_argument("--dpi", type=int, default=300, help="DPI for PDF rasterization.")
+    p_uni.add_argument("--confidence", type=float, default=0.5, help="Minimum confidence for AI detection.")
+    p_uni.add_argument("--scale", type=float, default=1.0, help="Scale in mm/pixel for image inputs.")
+    p_uni.add_argument("--device", default="auto", help="Computation device: 'cpu', 'cuda', or 'auto'.")
+    p_uni.add_argument("--dwg-version", default="ACAD2018", help="Output version for DWG files.")
+    p_uni.add_argument("--to-3d", action="store_true", help="Perform 3D extrusion after vectorization/conversion.")
+    p_uni.add_argument("--height", type=_positive_float, default=settings.default_extrude_height, help="Extrusion height for 3D conversion.")
+    p_uni.add_argument("--layers", nargs="*", help="Layers to extrude in 3D conversion.")
+    p_uni.add_argument("--arc-segments", type=int, default=12, help="Segments for arc approximation.")
+    p_uni.add_argument("--arc-max-seglen", type=float, help="Adaptive arc sampling max segment length.")
+    p_uni.add_argument("--optimize-vertices", action="store_true", help="Deduplicate vertices to reduce mesh size.")
+    p_uni.add_argument("--detect-hard-shapes", action="store_true", help="Detect and skip problematic polylines during extrusion.")
+
+
+def _setup_ml_ops_parsers(sub: argparse._SubParsersAction) -> None:
+    """
+    Set up argparse subparsers for Machine Learning Operations (MLOps) tasks like
+    dataset building, training, and model optimization.
+
+    Args:
+        sub: The subparser action object from argparse.
+    """
+    # --- Architectural Analysis ---
+    p_analyze = sub.add_parser("analyze-architectural", help="Analyze architectural drawings (plans, elevations, sections) to extract structured data.")
+    p_analyze.add_argument("--input", required=True, help="Input DXF file or a folder of DXF files.")
+    p_analyze.add_argument("--output-dir", required=True, help="Output directory for analysis results.")
+    p_analyze.add_argument("--recursive", action="store_true", help="Process folders recursively.")
+    p_analyze.add_argument("--export-json", action="store_true", help="Export the full dataset to JSON format.")
+    p_analyze.add_argument("--export-csv", action="store_true", help="Export room data to CSV format.")
+    p_analyze.add_argument("--report", action="store_true", help="Generate a human-readable text report for each drawing.")
+
+    # --- Dataset Building ---
+    p_build_ds = sub.add_parser("build-dataset", help="Build a training dataset from a collection of DXF files.")
+    p_build_ds.add_argument("--input-dir", required=True, help="Directory containing the source DXF files.")
+    p_build_ds.add_argument("--output-dir", required=True, help="Directory to save the output dataset.")
+    p_build_ds.add_argument("--image-size", type=int, nargs=2, default=[1024, 1024], help="Output image size (width height).")
+    p_build_ds.add_argument("--format", choices=["coco", "yolo", "both"], default="coco", help="Annotation output format.")
+    p_build_ds.add_argument("--visualize", action="store_true", help="Save visualization images with annotations overlaid.")
+    p_build_ds.add_argument("--recurse", action="store_true", help="Search for DXF files in subdirectories.")
+
+    # --- Model Training ---
+    p_train = sub.add_parser("train", help="Train a CAD object detection model.")
+    p_train.add_argument("--dataset-dir", required=True, help="Path to the dataset directory (in COCO format).")
+    p_train.add_argument("--output-dir", required=True, help="Directory to save model checkpoints and logs.")
+    p_train.add_argument("--epochs", type=int, default=50, help="Number of training epochs.")
+    p_train.add_argument("--batch-size", type=int, default=4, help="Training batch size.")
+    p_train.add_argument("--lr", type=float, default=0.001, help="Initial learning rate.")
+    p_train.add_argument("--device", default="cuda", help="Computation device: 'cpu' or 'cuda'.")
+    p_train.add_argument("--workers", type=int, default=4, help="Number of data loader workers.")
+    p_train.add_argument("--optimizer", choices=["sgd", "adam"], default="sgd", help="Optimizer type.")
+    p_train.add_argument("--resume", help="Path to a checkpoint file to resume training from.")
+    p_train.add_argument("--pretrained", action="store_true", help="Start with pre-trained model weights.")
+
+    # --- Model Optimization ---
+    p_optimize = sub.add_parser("optimize-model", help="Optimize a trained model for deployment (ONNX, TensorRT, Quantization).")
+    p_optimize.add_argument("--model", required=True, help="Path to the PyTorch model checkpoint (.pth).")
+    p_optimize.add_argument("--output-dir", required=True, help="Directory to save the optimized models.")
+    p_optimize.add_argument("--formats", nargs="+", choices=["onnx", "tensorrt", "quantized"], default=["onnx"], help="Target optimization formats.")
+    p_optimize.add_argument("--input-size", type=int, nargs=2, default=[1024, 1024], help="Model input size (height width).")
+    p_optimize.add_argument("--benchmark", action="store_true", help="Run and report benchmarks after optimization.")
+    p_optimize.add_argument("--device", default="cuda", help="Device for optimization: 'cpu' or 'cuda'.")
+
+    # --- Benchmarking ---
+    p_benchmark = sub.add_parser("benchmark", help="Evaluate the accuracy and speed of a model.")
+    p_benchmark.add_argument("--model", required=True, help="Path to the model file (.pth, .onnx, .trt).")
+    p_benchmark.add_argument("--dataset-dir", required=True, help="Path to the evaluation dataset (COCO format).")
+    p_benchmark.add_argument("--output-dir", required=True, help="Directory to save benchmark results.")
+    p_benchmark.add_argument("--model-format", choices=["pytorch", "onnx", "tensorrt"], default="pytorch", help="The format of the model being benchmarked.")
+    p_benchmark.add_argument("--batch-size", type=int, default=1, help="Benchmark batch size.")
+    p_benchmark.add_argument("--max-samples", type=int, help="Maximum number of samples to evaluate.")
+    p_benchmark.add_argument("--device", default="cuda", help="Device for benchmarking: 'cpu' or 'cuda'.")
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    """
+    Main entry point for the `cad3d` command-line interface.
+
+    Parses arguments, sets up subparsers for different commands, and dispatches
+    to the appropriate handler function based on the user's input.
+
+    Args:
+        argv: A list of command-line arguments, or None to use `sys.argv`.
+    """
+    # Load settings from environment variables and .env file
+    settings = AppSettings()
+
+    parser = argparse.ArgumentParser(prog="cad3d", description="An offline toolkit for 2D-to-3D CAD conversion and analysis.")
+    sub = parser.add_subparsers(dest="cmd", required=True, title="Available Commands")
+
+    # Organize parser setup into logical groups
+    _setup_core_parsers(sub, settings)
+    _setup_workflow_parsers(sub, settings)
+    _setup_ai_parsers(sub, settings)
+    _setup_ml_ops_parsers(sub)
 
     args = parser.parse_args(argv)
 
-    if args.cmd == "dxf-extrude":
-        hard_rows = [] if (args.hard_report_csv or args.hard_report_json) else None
-        color_rows = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
-        extrude_dxf_closed_polylines(
-            args.input,
-            args.output,
-            height=args.height,
-            layers=args.layers,
-            arc_segments=args.arc_segments,
-            arc_max_seglen=args.arc_max_seglen,
-            optimize=args.optimize_vertices,
-            detect_hard_shapes=args.detect_hard_shapes,
-            hard_shapes_collector=hard_rows,
-            colorize=getattr(args, "colorize", False),
-            split_by_color=getattr(args, "split_by_color", False),
-            color_stats_collector=color_rows,
+    # --- Command Dispatch ---
+    # A mapping of command names to their handler functions.
+    COMMAND_HANDLERS: Dict[str, Callable[[argparse.Namespace], None]] = {
+        "dxf-extrude": handle_dxf_extrude,
+        "dxf-to-dwg": handle_dxf_to_dwg,
+        "img-to-3d": handle_img_to_3d,
+        "auto-extrude": handle_auto_extrude,
+        "batch-extrude": handle_batch_extrude,
+        "analyze-architectural": handle_analyze_architectural,
+        "pdf-to-dxf": handle_pdf_to_dxf,
+        "image-to-dxf": handle_image_to_dxf,
+        "pdf-to-3d": handle_pdf_to_3d,
+        "build-dataset": handle_build_dataset,
+        "train": handle_train,
+        "optimize-model": handle_optimize_model,
+        "benchmark": handle_benchmark,
+        "universal-convert": handle_universal_convert,
+        "deep-hybrid": handle_deep_hybrid,
+    }
+
+    handler = COMMAND_HANDLERS.get(args.cmd)
+    if handler:
+        handler(args)
+    else:
+        # This case should not be reachable if a command is required.
+        parser.print_help()
+
+
+# --- Reporting Helper Functions ---
+
+def _write_hard_shape_reports(args: argparse.Namespace, hard_rows: Optional[List[Dict[str, Any]]]) -> None:
+    """
+    Writes diagnostic reports for "hard shapes" that were skipped during processing.
+
+    Args:
+        args: The command-line arguments, checked for report path attributes.
+        hard_rows: A list of dictionaries, where each entry details a skipped shape.
+    """
+    if not hard_rows:
+        return
+    if getattr(args, "hard_report_csv", None):
+        _write_csv_report(
+            Path(args.hard_report_csv),
+            ["layer", "handle", "issues", "vertex_count"],
+            [{"layer": r.get("layer", ""), "handle": r.get("handle", ""), "issues": ", ".join(r.get("issues", [])), "vertex_count": r.get("vertex_count", 0)} for r in hard_rows]
         )
-        if args.hard_report_csv and hard_rows:
-            import csv
-            p = Path(args.hard_report_csv)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["layer", "handle", "issues", "vertex_count"]) 
-                for r in hard_rows:
-                    w.writerow([r.get("layer", ""), r.get("handle", ""), r.get("issues", ""), r.get("vertex_count", 0)])
-        if getattr(args, "hard_report_json", None) and hard_rows:
-            import json
-            p = Path(args.hard_report_json)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("w", encoding="utf-8") as fp:
-                json.dump(hard_rows, fp, ensure_ascii=False, indent=2)
-        # Color reports
-        if getattr(args, "color_report_csv", None) and color_rows:
-            import csv
-            p = Path(args.color_report_csv)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            agg = {}
-            for r in color_rows:
-                key = (r.get("target_layer", ""), int(r.get("r", 0)), int(r.get("g", 0)), int(r.get("b", 0)))
-                agg[key] = agg.get(key, 0) + 1
-            with p.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["target_layer", "r", "g", "b", "count"]) 
-                for (layer, rr, gg, bb), cnt in sorted(agg.items()):
-                    w.writerow([layer, rr, gg, bb, cnt])
-        if getattr(args, "color_report_json", None) and color_rows:
-            import json
-            p = Path(args.color_report_json)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("w", encoding="utf-8") as fp:
-                json.dump(color_rows, fp, ensure_ascii=False, indent=2)
-        print(f"Wrote 3D DXF: {args.output}")
-    elif args.cmd == "dxf-to-dwg":
-        convert_dxf_to_dwg(args.input, args.output, out_version=args.version)
-        print(f"Wrote DWG: {args.output}")
-    elif args.cmd == "img-to-3d":
-        # Lazy import to avoid importing heavy deps when not needed
-        from .image_to_depth import image_to_3d_dxf
-        image_to_3d_dxf(args.input, args.output, scale=args.scale, model_path=args.model_path, size=args.size, optimize=args.optimize_vertices)
-        print(f"Wrote 3D DXF: {args.output}")
-    elif args.cmd == "auto-extrude":
-        from .dwg_io import convert_dwg_to_dxf
-        inp = Path(args.input)
-        outp = Path(args.output)
-        tmp_in_dxf: Path | None = None
-        tmp_out_dxf: Path | None = None
+    if getattr(args, "hard_report_json", None):
+        _write_json_report(Path(args.hard_report_json), hard_rows)
 
-        hard_rows = [] if (getattr(args, "hard_report_csv", None) or getattr(args, "hard_report_json", None)) else None
-        color_rows = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
-        try:
-            # Ensure input DXF
-            if inp.suffix.lower() == ".dwg":
-                tmp_in_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_in.dxf")
-                convert_dwg_to_dxf(str(inp), str(tmp_in_dxf), out_version=args.dwg_version)
-                in_dxf = tmp_in_dxf
-            elif inp.suffix.lower() == ".dxf":
-                in_dxf = inp
-            else:
-                raise RuntimeError("Unsupported input extension (use .dxf or .dwg)")
 
-            # Always extrude to a DXF first
-            if outp.suffix.lower() == ".dwg":
-                tmp_out_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_out.dxf")
-                extrude_dxf_closed_polylines(
-                    str(in_dxf),
-                    str(tmp_out_dxf),
-                    height=args.height,
-                    layers=args.layers,
-                    arc_segments=args.arc_segments,
-                    arc_max_seglen=args.arc_max_seglen,
-                    optimize=args.optimize_vertices,
-                    detect_hard_shapes=args.detect_hard_shapes,
-                    hard_shapes_collector=hard_rows,
-                    colorize=getattr(args, "colorize", False),
-                    split_by_color=getattr(args, "split_by_color", False),
-                    color_stats_collector=color_rows,
-                )
-                convert_dxf_to_dwg(str(tmp_out_dxf), str(outp), out_version=args.dwg_version)
-            elif outp.suffix.lower() == ".dxf":
-                extrude_dxf_closed_polylines(
-                    str(in_dxf),
-                    str(outp),
-                    height=args.height,
-                    layers=args.layers,
-                    arc_segments=args.arc_segments,
-                    arc_max_seglen=args.arc_max_seglen,
-                    optimize=args.optimize_vertices,
-                    detect_hard_shapes=args.detect_hard_shapes,
-                    hard_shapes_collector=hard_rows,
-                    colorize=getattr(args, "colorize", False),
-                    split_by_color=getattr(args, "split_by_color", False),
-                    color_stats_collector=color_rows,
-                )
-            else:
-                raise RuntimeError("Unsupported output extension (use .dxf or .dwg)")
+def _write_color_reports(args: argparse.Namespace, color_rows: Optional[List[Dict[str, Any]]]) -> None:
+    """
+    Writes reports summarizing color statistics for generated meshes.
 
-            print(f"Wrote: {args.output}")
-        finally:
-            if not getattr(args, "keep_temp", False):
-                try:
-                    if tmp_in_dxf and tmp_in_dxf.exists():
-                        tmp_in_dxf.unlink()
-                    if tmp_out_dxf and tmp_out_dxf.exists():
-                        tmp_out_dxf.unlink()
-                except Exception:
-                    pass
-            if args.hard_report_csv and hard_rows:
-                import csv
-                p = Path(args.hard_report_csv)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                with p.open("w", newline="", encoding="utf-8") as fp:
-                    w = csv.writer(fp)
-                    w.writerow(["layer", "handle", "issues", "vertex_count"]) 
-                    for r in hard_rows:
-                        w.writerow([r.get("layer", ""), r.get("handle", ""), r.get("issues", ""), r.get("vertex_count", 0)])
-            if getattr(args, "hard_report_json", None) and hard_rows:
-                import json
-                p = Path(args.hard_report_json)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                with p.open("w", encoding="utf-8") as fp:
-                    json.dump(hard_rows, fp, ensure_ascii=False, indent=2)
-            # Color reports
-            if getattr(args, "color_report_csv", None) and color_rows:
-                import csv
-                p = Path(args.color_report_csv)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                agg = {}
-                for r in color_rows:
-                    key = (r.get("target_layer", ""), int(r.get("r", 0)), int(r.get("g", 0)), int(r.get("b", 0)))
-                    agg[key] = agg.get(key, 0) + 1
-                with p.open("w", newline="", encoding="utf-8") as fp:
-                    w = csv.writer(fp)
-                    w.writerow(["target_layer", "r", "g", "b", "count"]) 
-                    for (layer, rr, gg, bb), cnt in sorted(agg.items()):
-                        w.writerow([layer, rr, gg, bb, cnt])
-            if getattr(args, "color_report_json", None) and color_rows:
-                import json
-                p = Path(args.color_report_json)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                with p.open("w", encoding="utf-8") as fp:
-                    json.dump(color_rows, fp, ensure_ascii=False, indent=2)
-    elif args.cmd == "batch-extrude":
-        from .dwg_io import convert_dwg_to_dxf, convert_dxf_to_dwg
-        import time, csv, json, traceback, uuid
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        in_root = Path(args.input_dir)
-        out_root = Path(args.output_dir)
-        out_root.mkdir(parents=True, exist_ok=True)
+    Args:
+        args: The command-line arguments, checked for report path attributes.
+        color_rows: A list of dictionaries with color data for each mesh.
+    """
+    if not color_rows:
+        return
+    if getattr(args, "color_report_csv", None):
+        _write_aggregated_color_csv_report(Path(args.color_report_csv), color_rows)
+    if getattr(args, "color_report_json", None):
+        _write_json_report(Path(args.color_report_json), color_rows)
 
-        # Collect files
-        files: list[Path] = []
-        globs = args.pattern
-        if args.recurse:
-            for pat in globs:
-                files.extend(in_root.rglob(pat))
+
+def _write_csv_report(path: Path, headers: List[str], rows: List[Dict[str, Any]]) -> None:
+    """
+    Writes a generic list of dictionaries to a CSV file.
+
+    Args:
+        path: The output file path.
+        headers: A list of strings for the CSV header row.
+        rows: A list of dictionaries to write as rows.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Report written: {path}")
+
+
+def _write_json_report(path: Path, data: List[Any]) -> None:
+    """
+    Writes a list of data to a JSON file.
+
+    Args:
+        path: The output file path.
+        data: The list of data to serialize.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=2)
+    print(f"Report written: {path}")
+
+
+def _write_aggregated_color_csv_report(path: Path, color_rows: List[Dict[str, Any]]) -> None:
+    """
+    Aggregates color data and writes a summary CSV report.
+
+    The report counts how many meshes were created for each combination of
+    file, target layer, and color.
+
+    Args:
+        path: The output file path.
+        color_rows: A list of raw color data entries.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    agg: Dict[tuple, int] = {}
+    key_fields = ("file_path", "target_layer", "r", "g", "b")
+    for r in color_rows:
+        key = tuple(r.get(k, "") for k in key_fields)
+        agg[key] = agg.get(key, 0) + 1
+    
+    rows_to_write = []
+    for key_tuple, count in sorted(agg.items()):
+        row = dict(zip(key_fields, key_tuple))
+        row["count"] = count
+        rows_to_write.append(row)
+
+    headers = list(key_fields) + ["count"]
+    _write_csv_report(path, headers, rows_to_write)
+
+
+# --- Command Handler Functions ---
+
+def handle_dxf_extrude(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'dxf-extrude' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    hard_rows = [] if (args.hard_report_csv or args.hard_report_json) else None
+    color_rows = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
+    
+    extrude_dxf_closed_polylines(
+        args.input,
+        args.output,
+        height=args.height,
+        layers=args.layers,
+        arc_segments=args.arc_segments,
+        arc_max_seglen=args.arc_max_seglen,
+        optimize=args.optimize_vertices,
+        detect_hard_shapes=args.detect_hard_shapes,
+        hard_shapes_collector=hard_rows,
+        colorize=getattr(args, "colorize", False),
+        split_by_color=getattr(args, "split_by_color", False),
+        color_stats_collector=color_rows,
+    )
+    
+    _write_hard_shape_reports(args, hard_rows)
+    _write_color_reports(args, color_rows)
+    print(f"Successfully wrote 3D DXF: {args.output}")
+
+
+def handle_dxf_to_dwg(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'dxf-to-dwg' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    convert_dxf_to_dwg(args.input, args.output, out_version=args.version)
+    print(f"Successfully wrote DWG: {args.output}")
+
+
+def handle_img_to_3d(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'img-to-3d' command. Lazily imports `image_to_depth`.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    from .image_to_depth import image_to_3d_dxf
+    image_to_3d_dxf(
+        args.input, 
+        args.output, 
+        scale=args.scale, 
+        model_path=args.model_path, 
+        size=args.size, 
+        optimize=args.optimize_vertices
+    )
+    print(f"Successfully wrote 3D DXF from image: {args.output}")
+
+
+def handle_auto_extrude(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'auto-extrude' command. Manages DWG->DXF->extrude->DWG flow.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    inp = Path(args.input)
+    outp = Path(args.output)
+    tmp_in_dxf: Optional[Path] = None
+    tmp_out_dxf: Optional[Path] = None
+
+    hard_rows = [] if (getattr(args, "hard_report_csv", None) or getattr(args, "hard_report_json", None)) else None
+    color_rows = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
+    
+    try:
+        # Step 1: Convert input to DXF if it's a DWG
+        if inp.suffix.lower() == ".dwg":
+            tmp_in_dxf = outp.with_suffix("").with_name(f"{outp.stem}_tmp_in.dxf")
+            convert_dwg_to_dxf(str(inp), str(tmp_in_dxf), out_version=args.dwg_version)
+            in_dxf = tmp_in_dxf
+        elif inp.suffix.lower() == ".dxf":
+            in_dxf = inp
         else:
-            for pat in globs:
-                files.extend(in_root.glob(pat))
+            raise ValueError("Unsupported input file type. Use .dxf or .dwg.")
 
-        processed = 0
-        report_rows: list[list[str]] = []
-        hard_rows: list[list[str]] = [] if args.hard_report_csv else []
-        hard_json: list[dict] = [] if getattr(args, "hard_report_json", None) else []
-        failed: list[tuple[Path, str]] = []
-        color_rows_all: list[dict] = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else []
-        def process_one(f: Path):
-            rec = {"file_path": str(f), "output_path": "", "status": "", "message": "", "duration_sec": 0.0}
-            try:
-                t0 = time.monotonic()
-                rel = f.relative_to(in_root)
-                target_stem = rel.with_suffix("").name
-                out_dir = (out_root / rel.parent)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                out_path = out_dir / f"{target_stem}.{args.out_format.lower()}"
-                if args.skip_existing and out_path.exists():
-                    rec.update({"output_path": str(out_path), "status": "skipped", "message": "exists"})
-                    return rec
+        # Step 2: Prepare arguments and extrude the DXF
+        extrude_args = {
+            "height": args.height,
+            "layers": args.layers,
+            "arc_segments": args.arc_segments,
+            "arc_max_seglen": args.arc_max_seglen,
+            "optimize": args.optimize_vertices,
+            "detect_hard_shapes": args.detect_hard_shapes,
+            "hard_shapes_collector": hard_rows,
+            "colorize": getattr(args, "colorize", False),
+            "split_by_color": getattr(args, "split_by_color", False),
+            "color_stats_collector": color_rows,
+        }
 
-                # Ensure DXF input for extrusion
-                tmp_in_dxf: Path | None = None
-                tmp_out_dxf: Path | None = None
-                try:
-                    if f.suffix.lower() == ".dwg":
-                        tmp_in_dxf = out_dir / f"{target_stem}.{uuid.uuid4().hex}.tmp_in.dxf"
-                        convert_dwg_to_dxf(str(f), str(tmp_in_dxf), out_version=args.dwg_version)
-                        in_dxf = tmp_in_dxf
-                    else:
-                        in_dxf = f
+        # Step 3: Convert extruded DXF to output format
+        if outp.suffix.lower() == ".dwg":
+            tmp_out_dxf = outp.with_suffix("").with_name(f"{outp.stem}_tmp_out.dxf")
+            extrude_dxf_closed_polylines(str(in_dxf), str(tmp_out_dxf), **extrude_args)
+            convert_dxf_to_dwg(str(tmp_out_dxf), str(outp), out_version=args.dwg_version)
+        elif outp.suffix.lower() == ".dxf":
+            extrude_dxf_closed_polylines(str(in_dxf), str(outp), **extrude_args)
+        else:
+            raise ValueError("Unsupported output file type. Use .dxf or .dwg.")
 
-                    if args.out_format == "DWG":
-                        tmp_out_dxf = out_dir / f"{target_stem}.{uuid.uuid4().hex}.tmp_out.dxf"
-                        local_hard = [] if (args.hard_report_csv or getattr(args, "hard_report_json", None)) else None
-                        local_colors = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
-                        extrude_dxf_closed_polylines(
-                            str(in_dxf),
-                            str(tmp_out_dxf),
-                            height=args.height,
-                            layers=args.layers,
-                            arc_segments=args.arc_segments,
-                            arc_max_seglen=args.arc_max_seglen,
-                            optimize=args.optimize_vertices,
-                            detect_hard_shapes=args.detect_hard_shapes,
-                            hard_shapes_collector=local_hard,
-                            colorize=getattr(args, "colorize", False),
-                            split_by_color=getattr(args, "split_by_color", False),
-                            color_stats_collector=local_colors,
-                        )
-                        convert_dxf_to_dwg(str(tmp_out_dxf), str(out_path), out_version=args.dwg_version)
-                    else:
-                        local_hard = [] if (args.hard_report_csv or getattr(args, "hard_report_json", None)) else None
-                        local_colors = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else None
-                        extrude_dxf_closed_polylines(
-                            str(in_dxf),
-                            str(out_path),
-                            height=args.height,
-                            layers=args.layers,
-                            arc_segments=args.arc_segments,
-                            arc_max_seglen=args.arc_max_seglen,
-                            optimize=args.optimize_vertices,
-                            detect_hard_shapes=args.detect_hard_shapes,
-                            hard_shapes_collector=local_hard,
-                            colorize=getattr(args, "colorize", False),
-                            split_by_color=getattr(args, "split_by_color", False),
-                            color_stats_collector=local_colors,
-                        )
+        print(f"Successfully created: {args.output}")
+    finally:
+        # Step 4: Clean up temporary files
+        if not getattr(args, "keep_temp", False):
+            if tmp_in_dxf and tmp_in_dxf.exists(): tmp_in_dxf.unlink(missing_ok=True)
+            if tmp_out_dxf and tmp_out_dxf.exists(): tmp_out_dxf.unlink(missing_ok=True)
+        
+        # Step 5: Write any generated reports
+        _write_hard_shape_reports(args, hard_rows)
+        _write_color_reports(args, color_rows)
 
-                    dt = time.monotonic() - t0
-                    rec.update({"output_path": str(out_path), "status": "ok", "duration_sec": round(dt, 3)})
-                    if args.hard_report_csv and local_hard:
-                        for r in local_hard:
-                            hard_rows.append([str(f), r.get("layer", ""), r.get("handle", ""), r.get("issues", ""), str(r.get("vertex_count", 0))])
-                    if getattr(args, "hard_report_json", None) and local_hard:
-                        for r in local_hard:
-                            rr = dict(r)
-                            rr["file_path"] = str(f)
-                            hard_json.append(rr)
-                    if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) and local_colors:
-                        for r in local_colors:
-                            rr = dict(r)
-                            rr["file_path"] = str(f)
-                            color_rows_all.append(rr)
-                    return rec
-                finally:
-                    if tmp_in_dxf and tmp_in_dxf.exists():
-                        try:
-                            tmp_in_dxf.unlink()
-                        except Exception:
-                            pass
-                    if tmp_out_dxf and tmp_out_dxf.exists():
-                        try:
-                            tmp_out_dxf.unlink()
-                        except Exception:
-                            pass
-            except Exception as ex:
-                tb = traceback.format_exc(limit=1).strip().replace("\n", " ")
-                rec.update({"status": "error", "message": f"{ex} | {tb}"})
+
+def handle_batch_extrude(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'batch-extrude' command. Processes files in parallel.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    in_root = Path(args.input_dir)
+    out_root = Path(args.output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    # Gather all files to be processed
+    files: List[Path] = []
+    for pat in args.pattern:
+        files.extend(in_root.rglob(pat) if args.recurse else in_root.glob(pat))
+
+    report_rows: List[Dict[str, Any]] = []
+    hard_json_all: List[Dict[str, Any]] = [] if getattr(args, "hard_report_json", None) else []
+    color_rows_all: List[Dict[str, Any]] = [] if (getattr(args, "color_report_csv", None) or getattr(args, "color_report_json", None)) else []
+
+    def process_one(f: Path) -> Dict[str, Any]:
+        """Processes a single file in the batch."""
+        rec = {"file_path": str(f), "output_path": "", "status": "init", "message": "", "duration_sec": 0.0}
+        t0 = time.monotonic()
+        try:
+            rel = f.relative_to(in_root)
+            out_dir = out_root / rel.parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{rel.stem}.{args.out_format.lower()}"
+            
+            if args.skip_existing and out_path.exists():
+                rec.update({"output_path": str(out_path), "status": "skipped", "message": "Output file already exists."})
                 return rec
 
-        if args.jobs > 1 and files:
-            with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
-                futs = {ex.submit(process_one, f): f for f in files}
-                for fut in as_completed(futs):
-                    rec = fut.result()
-                    report_rows.append([rec["file_path"], rec["output_path"], rec["status"], rec["message"], str(rec["duration_sec"])])
-                    if rec["status"] == "ok":
-                        processed += 1
-                    elif rec["status"] == "error":
-                        failed.append((Path(rec["file_path"]), rec["message"]))
-        else:
-            for f in files:
-                rec = process_one(f)
-                report_rows.append([rec["file_path"], rec["output_path"], rec["status"], rec["message"], str(rec["duration_sec"])])
-                if rec["status"] == "ok":
-                    processed += 1
-                elif rec["status"] == "error":
-                    failed.append((Path(rec["file_path"]), rec["message"]))
+            tmp_in_dxf, tmp_out_dxf = None, None
+            try:
+                in_dxf = f
+                if f.suffix.lower() == ".dwg":
+                    tmp_in_dxf = out_dir / f"{f.stem}.{uuid.uuid4().hex}.tmp_in.dxf"
+                    convert_dwg_to_dxf(str(f), str(tmp_in_dxf), out_version=args.dwg_version)
+                    in_dxf = tmp_in_dxf
 
-        print(f"Batch done. Processed: {processed}, Failed: {len(failed)}")
-        if failed:
-            for f, msg in failed[:10]:
-                print(f" - {f}: {msg}")
-        if args.report_csv:
-            csv_path = Path(args.report_csv)
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            with csv_path.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["file_path", "output_path", "status", "message", "duration_sec"])
-                w.writerows(report_rows)
-            print(f"Report written: {csv_path}")
-        if args.hard_report_csv and hard_rows:
-            csv_path = Path(args.hard_report_csv)
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            with csv_path.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["file_path", "layer", "handle", "issues", "vertex_count"])
-                w.writerows(hard_rows)
-            print(f"Hard-shapes report written: {csv_path}")
-        if getattr(args, "hard_report_json", None) and hard_json:
-            json_path = Path(args.hard_report_json)
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            with json_path.open("w", encoding="utf-8") as fp:
-                json.dump(hard_json, fp, ensure_ascii=False, indent=2)
-            print(f"Hard-shapes report written: {json_path}")
-        if args.report_json:
-            json_path = Path(args.report_json)
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            records = [
-                {"file_path": r[0], "output_path": r[1], "status": r[2], "message": r[3], "duration_sec": float(r[4]) if r[4] else 0.0}
-                for r in report_rows
-            ]
-            with json_path.open("w", encoding="utf-8") as fp:
-                json.dump(records, fp, ensure_ascii=False, indent=2)
-            print(f"Report written: {json_path}")
-        # Batch color reports
-        if getattr(args, "color_report_csv", None) and color_rows_all:
-            csv_path = Path(args.color_report_csv)
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            agg = {}
-            for r in color_rows_all:
-                key = (r.get("file_path", ""), r.get("target_layer", ""), int(r.get("r", 0)), int(r.get("g", 0)), int(r.get("b", 0)))
-                agg[key] = agg.get(key, 0) + 1
-            with csv_path.open("w", newline="", encoding="utf-8") as fp:
-                w = csv.writer(fp)
-                w.writerow(["file_path", "target_layer", "r", "g", "b", "count"]) 
-                for (fpn, layer, rr, gg, bb), cnt in sorted(agg.items()):
-                    w.writerow([fpn, layer, rr, gg, bb, cnt])
-            print(f"Color report written: {csv_path}")
-        if getattr(args, "color_report_json", None) and color_rows_all:
-            json_path = Path(args.color_report_json)
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            with json_path.open("w", encoding="utf-8") as fp:
-                json.dump(color_rows_all, fp, ensure_ascii=False, indent=2)
-            print(f"Color report written: {json_path}")
-    elif args.cmd == "analyze-architectural":
+                local_hard: List[Dict] = []
+                local_colors: List[Dict] = []
+                extrude_args = {
+                    "height": args.height, "layers": args.layers, "arc_segments": args.arc_segments,
+                    "arc_max_seglen": args.arc_max_seglen, "optimize": args.optimize_vertices,
+                    "detect_hard_shapes": args.detect_hard_shapes, "hard_shapes_collector": local_hard,
+                    "colorize": args.colorize, "split_by_color": args.split_by_color,
+                    "color_stats_collector": local_colors,
+                }
+
+                if args.out_format == "DWG":
+                    tmp_out_dxf = out_dir / f"{f.stem}.{uuid.uuid4().hex}.tmp_out.dxf"
+                    extrude_dxf_closed_polylines(str(in_dxf), str(tmp_out_dxf), **extrude_args)
+                    convert_dxf_to_dwg(str(tmp_out_dxf), str(out_path), out_version=args.dwg_version)
+                else:
+                    extrude_dxf_closed_polylines(str(in_dxf), str(out_path), **extrude_args)
+
+                # Collect results for consolidated reports
+                if args.hard_report_json or args.hard_report_csv:
+                    for r in local_hard:
+                        hard_json_all.append({"file_path": str(f), **r})
+                if args.color_report_csv or args.color_report_json:
+                    for r in local_colors:
+                        color_rows_all.append({"file_path": str(f), **r})
+                
+                rec.update({"output_path": str(out_path), "status": "ok"})
+            finally:
+                if tmp_in_dxf: tmp_in_dxf.unlink(missing_ok=True)
+                if tmp_out_dxf: tmp_out_dxf.unlink(missing_ok=True)
+        except Exception as ex:
+            tb = traceback.format_exc(limit=1).strip().replace("\n", " ")
+            rec.update({"status": "error", "message": f"{type(ex).__name__}: {ex} | {tb}"})
+        
+        rec["duration_sec"] = round(time.monotonic() - t0, 3)
+        return rec
+
+    # Execute processing, in parallel or sequentially
+    if args.jobs > 1 and len(files) > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            futs = {executor.submit(process_one, f): f for f in files}
+            for fut in as_completed(futs):
+                report_rows.append(fut.result())
+    else:
+        for f in files:
+            report_rows.append(process_one(f))
+
+    # Final summary and reporting
+    processed = sum(1 for r in report_rows if r["status"] == "ok")
+    skipped = sum(1 for r in report_rows if r["status"] == "skipped")
+    failed_rows = [r for r in report_rows if r["status"] == "error"]
+    print(f"\nBatch complete. Succeeded: {processed}, Skipped: {skipped}, Failed: {len(failed_rows)}")
+    for f_rec in failed_rows[:10]: # Print first 10 errors
+        print(f" - ERROR in {Path(f_rec['file_path']).name}: {f_rec['message']}")
+
+    if args.report_csv:
+        _write_csv_report(Path(args.report_csv), ["file_path", "output_path", "status", "message", "duration_sec"], report_rows)
+    if args.report_json:
+        _write_json_report(Path(args.report_json), report_rows)
+    if args.hard_report_csv and hard_json_all:
+        _write_csv_report(Path(args.hard_report_csv), ["file_path", "layer", "handle", "issues", "vertex_count"], hard_json_all)
+    if args.hard_report_json and hard_json_all:
+        _write_json_report(Path(args.hard_report_json), hard_json_all)
+    if args.color_report_csv and color_rows_all:
+        _write_aggregated_color_csv_report(Path(args.color_report_csv), color_rows_all)
+    if args.color_report_json and color_rows_all:
+        _write_json_report(Path(args.color_report_json), color_rows_all)
+
+
+def handle_analyze_architectural(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'analyze-architectural' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
         from .architectural_analyzer import ArchitecturalAnalyzer, generate_analysis_report
         from .dataset_builder import ArchitecturalDatasetBuilder
+    except ImportError as e:
+        print(f"❌ Error: {e}\nInstall analysis dependencies: pip install shapely")
+        return
+
+    input_path = Path(args.input)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if input_path.is_file():
+        print(f"Analyzing single drawing: {input_path.name}")
+        analyzer = ArchitecturalAnalyzer(str(input_path))
+        analysis = analyzer.analyze()
         
-        input_path = Path(args.input)
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if args.report:
+            report = generate_analysis_report(analysis)
+            print(report)
+            (output_dir / f"{input_path.stem}_analysis.txt").write_text(report, encoding="utf-8")
         
-        if input_path.is_file():
-            # تحلیل یک فایل
-            print(f"تحلیل نقشه: {input_path.name}")
-            analyzer = ArchitecturalAnalyzer(str(input_path))
-            analysis = analyzer.analyze()
-            
-            # گزارش متنی
-            if args.report:
+        if args.export_json:
+            json_path = output_dir / f"{input_path.stem}_analysis.json"
+            simple_data = {
+                "drawing_type": analysis.drawing_type.value, "total_area": analysis.total_area,
+                "num_rooms": len(analysis.rooms), "num_walls": len(analysis.walls),
+                "rooms": [{"name": r.name, "type": r.space_type.value, "area": r.area, "width": r.width, "length": r.length} for r in analysis.rooms],
+            }
+            _write_json_report(json_path, [simple_data])
+    
+    elif input_path.is_dir():
+        print(f"Processing architectural dataset from folder: {input_path}")
+        builder = ArchitecturalDatasetBuilder(str(output_dir))
+        builder.process_folder(str(input_path), recursive=args.recursive)
+        
+        if args.report:
+            for i, analysis in enumerate(builder.analyses, 1):
                 report = generate_analysis_report(analysis)
-                print(report)
-                report_path = output_dir / f"{input_path.stem}_analysis.txt"
-                report_path.write_text(report, encoding="utf-8")
-                print(f"گزارش ذخیره شد: {report_path}")
-            
-            # JSON خروجی
-            if args.export_json:
-                import json
-                from dataclasses import asdict
-                json_path = output_dir / f"{input_path.stem}_analysis.json"
-                # ساده‌سازی برای JSON serialization
-                simple_data = {
-                    "drawing_type": analysis.drawing_type.value,
-                    "total_area": analysis.total_area,
-                    "num_rooms": len(analysis.rooms),
-                    "num_walls": len(analysis.walls),
-                    "rooms": [
-                        {
-                            "name": r.name,
-                            "type": r.space_type.value,
-                            "area": r.area,
-                            "width": r.width,
-                            "length": r.length,
-                        }
-                        for r in analysis.rooms
-                    ],
-                }
-                with json_path.open("w", encoding="utf-8") as f:
-                    json.dump(simple_data, f, ensure_ascii=False, indent=2)
-                print(f"JSON ذخیره شد: {json_path}")
+                safe_name = Path(analysis.metadata.get("file_path", f"drawing_{i}")).stem
+                (output_dir / f"{safe_name}_analysis.txt").write_text(report, encoding="utf-8")
         
-        elif input_path.is_dir():
-            # پردازش پوشه
-            print(f"پردازش پوشه: {input_path}")
-            builder = ArchitecturalDatasetBuilder(str(output_dir))
-            builder.process_folder(str(input_path), recursive=args.recursive)
-            
-            # گزارش‌های متنی
-            if args.report:
-                for i, analysis in enumerate(builder.analyses, 1):
-                    report = generate_analysis_report(analysis)
-                    file_name = analysis.metadata.get("file_path", f"drawing_{i}")
-                    safe_name = Path(file_name).stem
-                    report_path = output_dir / f"{safe_name}_analysis.txt"
-                    report_path.write_text(report, encoding="utf-8")
-            
-            # Export dataset
-            if args.export_json:
-                builder.export_to_json()
-            
-            if args.export_csv:
-                builder.export_rooms_to_csv()
-            
-            # آمار و خلاصه
-            builder.export_statistics()
-            summary = builder.generate_summary_report()
-            print("\n" + summary)
-            
-            summary_path = output_dir / "dataset_summary.txt"
-            summary_path.write_text(summary, encoding="utf-8")
-            print(f"\nگزارش خلاصه: {summary_path}")
+        if args.export_json: builder.export_to_json()
+        if args.export_csv: builder.export_rooms_to_csv()
         
-        else:
-            print(f"❌ مسیر نامعتبر: {input_path}")
+        builder.export_statistics()
+        summary = builder.generate_summary_report()
+        print("\n" + summary)
+        (output_dir / "dataset_summary.txt").write_text(summary, encoding="utf-8")
+    else:
+        print(f"❌ Error: Invalid input path specified: {input_path}")
 
-    elif args.cmd == "pdf-to-dxf":
-        # تبدیل PDF به DXF با شبکه عصبی
-        try:
-            from .neural_cad_detector import NeuralCADDetector
-            from .pdf_processor import PDFToImageConverter, CADPipeline
-            
-            print("🚀 Neural PDF to DXF Pipeline")
-            print(f"   Input: {args.input}")
-            print(f"   Output: {args.output}")
-            print(f"   DPI: {args.dpi}, Confidence: {args.confidence}, Device: {args.device}")
-            
-            # ساخت pipeline
-            detector = NeuralCADDetector(device=args.device)
-            pdf_converter = PDFToImageConverter(dpi=args.dpi)
-            pipeline = CADPipeline(
-                neural_detector=detector,
-                pdf_converter=pdf_converter
-            )
-            
-            # پردازش
-            pipeline.process_pdf_to_dxf(
-                args.input,
-                args.output,
-                confidence_threshold=args.confidence,
-                scale_mm_per_pixel=args.scale
-            )
-            
-            print(f"\n✅ Success! DXF saved: {args.output}")
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install neural dependencies: pip install -r requirements-neural.txt")
-        except Exception as e:
-            print(f"❌ Error processing PDF: {e}")
 
-    elif args.cmd == "image-to-dxf":
-        # تبدیل عکس به DXF با AI
-        try:
-            from .neural_cad_detector import NeuralCADDetector
+def _run_neural_pipeline(args: argparse.Namespace, mode: str) -> None:
+    """
+    Generic dispatcher for neural network-based pipelines.
+
+    This function lazily imports the required heavy modules and runs the
+    appropriate conversion or detection pipeline based on the `mode`.
+
+    Args:
+        args: The parsed command-line arguments.
+        mode: A string identifying the pipeline to run (e.g., 'pdf_to_dxf').
+    """
+    try:
+        from .neural_cad_detector import NeuralCADDetector, ImageTo3DExtruder
+        from .pdf_processor import PDFToImageConverter, CADPipeline
+        
+        print(f"🚀 Initializing Neural Pipeline: {mode.replace('_', ' ').title()}")
+        print(f"   Input: {args.input}\n   Output: {args.output}")
+        
+        detector = NeuralCADDetector(device=args.device)
+        pipeline_args: Dict[str, Any] = {'neural_detector': detector}
+        
+        if 'pdf' in mode:
+            pipeline_args['pdf_converter'] = PDFToImageConverter(dpi=args.dpi)
+        if '3d' in mode:
+            pipeline_args['extruder_3d'] = ImageTo3DExtruder()
             
-            print("🚀 Neural Image to DXF")
-            print(f"   Input: {args.input}")
-            print(f"   Output: {args.output}")
-            
-            detector = NeuralCADDetector(device=args.device)
-            
-            # Vectorization
-            vectorized = detector.vectorize_drawing(
-                args.input,
-                scale_mm_per_pixel=args.scale,
-                detect_lines=args.detect_lines,
-                detect_circles=args.detect_circles,
-                detect_text=args.detect_text
-            )
-            
-            # تبدیل به DXF
+        pipeline = CADPipeline(**pipeline_args)
+        
+        if mode == 'pdf_to_dxf':
+            pipeline.process_pdf_to_dxf(args.input, args.output, confidence_threshold=args.confidence, scale_mm_per_pixel=args.scale)
+        elif mode == 'image_to_dxf':
+            vectorized = detector.vectorize_drawing(args.input, scale_mm_per_pixel=args.scale, detect_lines=args.detect_lines, detect_circles=args.detect_circles, detect_text=args.detect_text)
             detector.convert_to_dxf(vectorized, args.output)
+        elif mode == 'pdf_to_3d':
+            pipeline.process_pdf_to_3d(args.input, args.output, intelligent_height=args.intelligent_height)
             
-            print(f"\n✅ Success! DXF saved: {args.output}")
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install neural dependencies: pip install -r requirements-neural.txt")
-        except Exception as e:
-            print(f"❌ Error processing image: {e}")
+        print(f"\n✅ Success! Output saved to: {args.output}")
+    except ImportError as e:
+        print(f"❌ Error: Neural dependencies not found. {e}")
+        print("   Please install them with: pip install -r requirements-neural.txt")
+    except Exception as e:
+        print(f"❌ An unexpected error occurred in the neural pipeline: {e}")
+        traceback.print_exc()
 
-    elif args.cmd == "pdf-to-3d":
-        # تبدیل PDF به 3D DXF با هوش مصنوعی
-        try:
-            from .neural_cad_detector import NeuralCADDetector, ImageTo3DExtruder
-            from .pdf_processor import PDFToImageConverter, CADPipeline
-            
-            print("🚀 Neural PDF to 3D DXF Pipeline")
-            print(f"   Input: {args.input}")
-            print(f"   Output: {args.output}")
-            
-            detector = NeuralCADDetector(device=args.device)
-            pdf_converter = PDFToImageConverter(dpi=args.dpi)
-            extruder = ImageTo3DExtruder()
-            
-            pipeline = CADPipeline(
-                neural_detector=detector,
-                pdf_converter=pdf_converter,
-                extruder_3d=extruder
-            )
-            
-            pipeline.process_pdf_to_3d(
-                args.input,
-                args.output,
-                intelligent_height=args.intelligent_height
-            )
-            
-            print(f"\n✅ Success! 3D DXF saved: {args.output}")
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install neural dependencies: pip install -r requirements-neural.txt")
-        except Exception as e:
-            print(f"❌ Error processing PDF to 3D: {e}")
 
-    elif args.cmd == "build-dataset":
-        try:
-            from .training_dataset_builder import CADDatasetBuilder
-            
-            print("📦 Building CAD Training Dataset")
-            print(f"   Input DXF: {args.input_dir}")
-            print(f"   Output: {args.output_dir}")
-            print(f"   Format: {args.format}")
-            
-            builder = CADDatasetBuilder(output_dir=args.output_dir)
-            
-            input_path = Path(args.input_dir)
-            if args.recurse:
-                dxf_files = list(input_path.rglob("*.dxf"))
-            else:
-                dxf_files = list(input_path.glob("*.dxf"))
-            
-            print(f"\n🔍 Found {len(dxf_files)} DXF files")
-            
-            for i, dxf_file in enumerate(dxf_files, 1):
-                print(f"   [{i}/{len(dxf_files)}] Processing {dxf_file.name}...", end=" ")
-                try:
-                    builder.add_dxf_to_dataset(
-                        str(dxf_file),
-                        image_size=tuple(args.image_size)
-                    )
-                    print("✅")
-                except Exception as e:
-                    print(f"❌ {e}")
-            
-            print(f"\n💾 Exporting annotations...")
-            if args.format in ["coco", "both"]:
-                builder.export_coco_format()
-                print("   ✅ COCO format exported")
-            if args.format in ["yolo", "both"]:
-                builder.export_yolo_format()
-                print("   ✅ YOLO format exported")
-            
-            if args.visualize:
-                print(f"\n🎨 Generating visualization...")
-                builder.visualize_annotations()
-                print("   ✅ Visualizations saved")
-            
-            print(f"\n✅ Dataset ready at: {args.output_dir}")
-            print(f"   Total images: {len(builder.images)}")
-            print(f"   Total annotations: {len(builder.annotations)}")
-            
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install dependencies: pip install -r requirements-neural.txt")
-        except Exception as e:
-            print(f"❌ Error building dataset: {e}")
-            import traceback
-            traceback.print_exc()
+def handle_pdf_to_dxf(args: argparse.Namespace) -> None:
+    """Handler for 'pdf-to-dxf' command."""
+    _run_neural_pipeline(args, 'pdf_to_dxf')
 
-    elif args.cmd == "train":
-        try:
-            from .training_pipeline import CADDetectionTrainer
-            import torch
-            
-            print("🎓 Training CAD Detection Model")
-            print(f"   Dataset: {args.dataset_dir}")
-            print(f"   Output: {args.output_dir}")
-            print(f"   Epochs: {args.epochs}")
-            print(f"   Batch Size: {args.batch_size}")
-            print(f"   Device: {args.device}")
-            
-            device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-            print(f"   Using device: {device}")
-            
-            trainer = CADDetectionTrainer(
-                data_dir=args.dataset_dir,
-                output_dir=args.output_dir,
-                batch_size=args.batch_size,
-                num_workers=args.workers,
-                device=device,
-                pretrained=args.pretrained
-            )
-            
-            trainer.setup_optimizer(
-                optimizer_type=args.optimizer,
-                learning_rate=args.lr
-            )
-            
-            if args.resume:
-                print(f"\n📂 Loading checkpoint: {args.resume}")
-                trainer.load_checkpoint(args.resume)
-            
-            print(f"\n🚀 Starting training...")
-            trainer.train(num_epochs=args.epochs)
-            
-            print(f"\n✅ Training complete!")
-            print(f"   Best model: {Path(args.output_dir) / 'best_model.pth'}")
-            print(f"   Checkpoints: {args.output_dir}")
-            
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install PyTorch: pip install torch torchvision")
-        except Exception as e:
-            print(f"❌ Error during training: {e}")
-            import traceback
-            traceback.print_exc()
+def handle_image_to_dxf(args: argparse.Namespace) -> None:
+    """Handler for 'image-to-dxf' command."""
+    _run_neural_pipeline(args, 'image_to_dxf')
 
-    elif args.cmd == "optimize-model":
-        try:
-            from .model_optimizer import ModelOptimizer
-            from .training_pipeline import CADDetectionTrainer
-            import torch
+def handle_pdf_to_3d(args: argparse.Namespace) -> None:
+    """Handler for 'pdf-to-3d' command."""
+    _run_neural_pipeline(args, 'pdf_to_3d')
+
+
+def handle_build_dataset(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'build-dataset' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
+        from .training_dataset_builder import CADDatasetBuilder
+        
+        print("📦 Building CAD Training Dataset...")
+        builder = CADDatasetBuilder(output_dir=args.output_dir)
+        input_path = Path(args.input_dir)
+        dxf_files = list(input_path.rglob("*.dxf")) if args.recurse else list(input_path.glob("*.dxf"))
+        
+        if not dxf_files:
+            print(f"⚠️ No DXF files found in {input_path}.")
+            return
             
-            print("⚡ Model Optimization Pipeline")
-            print(f"   Model: {args.model}")
-            print(f"   Output: {args.output_dir}")
-            print(f"   Formats: {', '.join(args.formats)}")
-            
-            device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-            print(f"   Device: {device}")
-            
-            # Load model
-            print(f"\n📂 Loading model...")
-            trainer = CADDetectionTrainer(
-                data_dir=".",  # Not used for optimization
-                output_dir=".",
-                device=device
-            )
-            
+        print(f"🔍 Found {len(dxf_files)} DXF files to process.")
+        for i, dxf_file in enumerate(dxf_files, 1):
+            print(f"   [{i}/{len(dxf_files)}] Processing {dxf_file.name}...", end="", flush=True)
+            try:
+                builder.add_dxf_to_dataset(str(dxf_file), image_size=tuple(args.image_size))
+                print(" ✅")
+            except Exception as e:
+                print(f" ❌ Error: {e}")
+        
+        print("\n💾 Exporting annotations...")
+        if args.format in ["coco", "both"]: builder.export_coco_format()
+        if args.format in ["yolo", "both"]: builder.export_yolo_format()
+        if args.visualize: builder.visualize_annotations()
+        
+        print(f"\n✅ Dataset built successfully at: {args.output_dir}")
+        print(f"   Total Images: {len(builder.images)}, Total Annotations: {len(builder.annotations)}")
+    except ImportError as e:
+        print(f"❌ Error: MLOps dependencies not found. {e}")
+        print("   Please install them with: pip install -r requirements-neural.txt")
+    except Exception as e:
+        print(f"❌ An error occurred while building the dataset: {e}")
+        traceback.print_exc()
+
+
+def handle_train(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'train' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
+        from .training_pipeline import CADDetectionTrainer
+        import torch
+        
+        print("🎓 Training CAD Detection Model...")
+        if not torch.cuda.is_available() and args.device == "cuda":
+            print("⚠️ CUDA not available, switching to CPU. Training will be slow.")
+            device = torch.device("cpu")
+        else:
+            device = torch.device(args.device)
+        
+        print(f"   Using device: {device}")
+        
+        trainer = CADDetectionTrainer(
+            data_dir=args.dataset_dir, output_dir=args.output_dir, batch_size=args.batch_size,
+            num_workers=args.workers, device=device, pretrained=args.pretrained
+        )
+        trainer.setup_optimizer(optimizer_type=args.optimizer, learning_rate=args.lr)
+        
+        if args.resume:
+            print(f"📂 Resuming training from checkpoint: {args.resume}")
+            trainer.load_checkpoint(args.resume)
+        
+        print("🚀 Starting training loop...")
+        trainer.train(num_epochs=args.epochs)
+        print(f"✅ Training complete! Best model saved to: {Path(args.output_dir) / 'best_model.pth'}")
+    except ImportError as e:
+        print(f"❌ Error: PyTorch dependencies not found. {e}")
+        print("   Please install them with: pip install torch torchvision")
+    except Exception as e:
+        print(f"❌ An error occurred during training: {e}")
+        traceback.print_exc()
+
+
+def handle_optimize_model(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'optimize-model' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
+        from .model_optimizer import ModelOptimizer, compare_models
+        from .training_pipeline import CADDetectionTrainer
+        import torch
+        
+        print("⚡ Model Optimization Pipeline...")
+        device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+        
+        # Load the model from the checkpoint
+        trainer = CADDetectionTrainer(data_dir=".", output_dir=".", device=device)
+        checkpoint = torch.load(args.model, map_location=device)
+        trainer.model.load_state_dict(checkpoint['model_state_dict'])
+        trainer.model.eval()
+        
+        optimizer = ModelOptimizer(device=str(device))
+        input_shape = (1, 3, args.input_size[0], args.input_size[1])
+        results = optimizer.optimize_full_pipeline(
+            model=trainer.model, output_dir=args.output_dir,
+            input_shape=input_shape, formats=args.formats, benchmark=args.benchmark
+        )
+        
+        print(f"✅ Optimization complete! Models saved in: {args.output_dir}")
+        if args.benchmark and results:
+            compare_models(results)
+    except ImportError as e:
+        print(f"❌ Error: Optimization dependencies not found. {e}")
+        print("   Please install them with: pip install torch onnx onnxruntime")
+    except Exception as e:
+        print(f"❌ An error occurred during model optimization: {e}")
+        traceback.print_exc()
+
+
+def handle_benchmark(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'benchmark' command.
+
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
+        from .benchmark_suite import DetectionBenchmark
+        from .training_pipeline import CADDataset, CADDetectionTrainer
+        import torch
+        from torch.utils.data import DataLoader
+        
+        print("📊 Running Model Benchmark...")
+        device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+        print(f"   Device: {device}")
+        
+        dataset = CADDataset(root_dir=args.dataset_dir, annotation_file=str(Path(args.dataset_dir) / "annotations.json"))
+        # Use collate_fn to handle the dataset's tuple output
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))
+        
+        print(f"   Evaluating on {len(dataset)} images.")
+        
+        model: Any
+        if args.model_format == "pytorch":
+            trainer = CADDetectionTrainer(data_dir=".", output_dir=".", device=device)
             checkpoint = torch.load(args.model, map_location=device)
             trainer.model.load_state_dict(checkpoint['model_state_dict'])
             trainer.model.eval()
-            
-            # Create optimizer
-            optimizer = ModelOptimizer(device=str(device))
-            
-            # Run optimization pipeline
-            input_shape = (1, 3, args.input_size[0], args.input_size[1])
-            
-            results = optimizer.optimize_full_pipeline(
-                model=trainer.model,
-                output_dir=args.output_dir,
-                input_shape=input_shape,
-                formats=args.formats,
-                benchmark=args.benchmark
-            )
-            
-            print(f"\n✅ Optimization complete!")
-            print(f"   Output directory: {args.output_dir}")
-            
-            if args.benchmark:
-                from .model_optimizer import compare_models
-                compare_models(results)
-            
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install dependencies: pip install torch onnx onnxruntime")
-        except Exception as e:
-            print(f"❌ Error during optimization: {e}")
-            import traceback
-            traceback.print_exc()
+            model = trainer.model
+        else:
+            model = args.model # Path to ONNX or TRT model
+        
+        benchmark = DetectionBenchmark(model, device=str(device), model_format=args.model_format)
+        overall_metrics, category_metrics = benchmark.evaluate_dataset(dataloader, max_samples=args.max_samples)
+        
+        benchmark.print_detailed_report(overall_metrics, category_metrics)
+        output_path = Path(args.output_dir) / "benchmark_results.json"
+        benchmark.save_results(str(output_path), overall_metrics, category_metrics)
+        
+        print(f"✅ Benchmark complete! Results saved to: {output_path}")
+    except ImportError as e:
+        print(f"❌ Error: PyTorch/MLOps dependencies not found. {e}")
+    except Exception as e:
+        print(f"❌ An error occurred during benchmarking: {e}")
+        traceback.print_exc()
 
-    elif args.cmd == "benchmark":
-        try:
-            from .benchmark_suite import DetectionBenchmark
-            from .training_pipeline import CADDataset, CADDetectionTrainer
-            import torch
-            from torch.utils.data import DataLoader
-            
-            print("📊 Model Benchmarking")
-            print(f"   Model: {args.model}")
-            print(f"   Dataset: {args.dataset_dir}")
-            print(f"   Format: {args.model_format}")
-            
-            device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-            print(f"   Device: {device}")
-            
-            # Load dataset
-            print(f"\n📂 Loading dataset...")
-            dataset = CADDataset(
-                root_dir=args.dataset_dir,
-                annotation_file=str(Path(args.dataset_dir) / "annotations.json")
-            )
-            
-            dataloader = DataLoader(
-                dataset,
-                batch_size=args.batch_size,
-                shuffle=False,
-                num_workers=0,
-                collate_fn=lambda x: tuple(zip(*x))
-            )
-            
-            print(f"   Dataset size: {len(dataset)} images")
-            
-            # Load model
-            print(f"\n📂 Loading model...")
-            if args.model_format == "pytorch":
-                trainer = CADDetectionTrainer(
-                    data_dir=".",
-                    output_dir=".",
-                    device=device
-                )
-                checkpoint = torch.load(args.model, map_location=device)
-                trainer.model.load_state_dict(checkpoint['model_state_dict'])
-                trainer.model.eval()
-                model = trainer.model
-            else:
-                # ONNX/TensorRT support
-                model = args.model
-            
-            # Run benchmark
-            print(f"\n🚀 Running benchmark...")
-            benchmark = DetectionBenchmark(model, device=str(device))
-            
-            overall_metrics, category_metrics = benchmark.evaluate_dataset(
-                dataloader,
-                max_samples=args.max_samples
-            )
-            
-            # Print report
-            benchmark.print_detailed_report(overall_metrics, category_metrics)
-            
-            # Save results
-            output_path = Path(args.output_dir) / "benchmark_results.json"
-            benchmark.save_results(str(output_path), overall_metrics, category_metrics)
-            
-            print(f"\n✅ Benchmark complete!")
-            print(f"   Results saved: {output_path}")
-            
-        except ImportError as e:
-            print(f"❌ Error: {e}")
-            print("Install PyTorch: pip install torch torchvision")
-        except Exception as e:
-            print(f"❌ Error during benchmark: {e}")
-            import traceback
-            traceback.print_exc()
 
-    elif args.cmd == "universal-convert":
-        from shutil import copyfile
-        from .dwg_io import convert_dxf_to_dwg, convert_dwg_to_dxf
-        inp = Path(args.input)
-        outp = Path(args.output)
-        in_ext = inp.suffix.lower()
-        out_ext = outp.suffix.lower()
+def handle_universal_convert(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'universal-convert' command.
 
-        def ensure_parent(p: Path):
-            p.parent.mkdir(parents=True, exist_ok=True)
+    Args:
+        args: The parsed command-line arguments.
+    """
+    from shutil import copyfile
+    inp = Path(args.input)
+    outp = Path(args.output)
+    
+    # Create a temporary directory for intermediate files
+    temp_dir = outp.parent / f"temp_{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        in_dxf_path_for_processing: Optional[Path] = None
 
-        def extrude_to_destination(in_dxf_path: Path) -> None:
-            # Extrude DXF and write to desired output (DXF/DWG)
-            ensure_parent(outp)
-            if out_ext == ".dwg":
-                tmp_out_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_out3d.dxf")
-                extrude_dxf_closed_polylines(
-                    str(in_dxf_path),
-                    str(tmp_out_dxf),
-                    height=args.height,
-                    layers=args.layers,
-                    arc_segments=args.arc_segments,
-                    arc_max_seglen=args.arc_max_seglen,
-                    optimize=args.optimize_vertices,
-                    detect_hard_shapes=args.detect_hard_shapes,
-                    hard_shapes_collector=None,
-                    colorize=False,
-                    split_by_color=False,
-                    color_stats_collector=None,
-                )
+        # --- Step 1: Convert input to a common 2D DXF format ---
+        if inp.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]:
+            from .neural_cad_detector import NeuralCADDetector
+            detector = NeuralCADDetector(device=args.device)
+            vectorized = detector.vectorize_drawing(inp, scale_mm_per_pixel=args.scale)
+            tmp_vec_dxf = temp_dir / "vectorized.dxf"
+            detector.convert_to_dxf(vectorized, str(tmp_vec_dxf))
+            in_dxf_path_for_processing = tmp_vec_dxf
+        elif inp.suffix.lower() == ".pdf":
+            from .neural_cad_detector import NeuralCADDetector
+            from .pdf_processor import PDFToImageConverter, CADPipeline
+            pipe = CADPipeline(neural_detector=NeuralCADDetector(device=args.device), pdf_converter=PDFToImageConverter(dpi=args.dpi))
+            tmp_vec_dxf = temp_dir / "vectorized.dxf"
+            pipe.process_pdf_to_dxf(str(inp), str(tmp_vec_dxf), confidence_threshold=args.confidence, scale_mm_per_pixel=args.scale)
+            in_dxf_path_for_processing = tmp_vec_dxf
+        elif inp.suffix.lower() == ".dxf":
+            in_dxf_path_for_processing = inp
+        elif inp.suffix.lower() == ".dwg":
+            tmp_in_dxf = temp_dir / "input.dxf"
+            convert_dwg_to_dxf(str(inp), str(tmp_in_dxf), out_version=args.dwg_version)
+            in_dxf_path_for_processing = tmp_in_dxf
+        else:
+            raise ValueError("Unsupported input format. Use PDF, image, DXF, or DWG.")
+
+        if not in_dxf_path_for_processing:
+            raise RuntimeError("Failed to create an intermediate DXF file for processing.")
+
+        # --- Step 2: Process the 2D DXF to the final output ---
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        if args.to_3d:
+            extrude_args = {
+                "height": args.height, "layers": args.layers, "arc_segments": args.arc_segments,
+                "arc_max_seglen": args.arc_max_seglen, "optimize": args.optimize_vertices,
+                "detect_hard_shapes": args.detect_hard_shapes, "hard_shapes_collector": None,
+                "colorize": False, "split_by_color": False, "color_stats_collector": None,
+            }
+            if outp.suffix.lower() == ".dwg":
+                tmp_out_dxf = temp_dir / "extruded.dxf"
+                extrude_dxf_closed_polylines(str(in_dxf_path_for_processing), str(tmp_out_dxf), **extrude_args)
                 convert_dxf_to_dwg(str(tmp_out_dxf), str(outp), out_version=args.dwg_version)
-                try:
-                    tmp_out_dxf.unlink()
-                except Exception:
-                    pass
-            elif out_ext == ".dxf":
-                extrude_dxf_closed_polylines(
-                    str(in_dxf_path),
-                    str(outp),
-                    height=args.height,
-                    layers=args.layers,
-                    arc_segments=args.arc_segments,
-                    arc_max_seglen=args.arc_max_seglen,
-                    optimize=args.optimize_vertices,
-                    detect_hard_shapes=args.detect_hard_shapes,
-                    hard_shapes_collector=None,
-                    colorize=False,
-                    split_by_color=False,
-                    color_stats_collector=None,
-                )
-            else:
-                raise RuntimeError("خروجی باید DXF یا DWG باشد")
+            else: # DXF output
+                extrude_dxf_closed_polylines(str(in_dxf_path_for_processing), str(outp), **extrude_args)
+        else: # 2D output
+            if outp.suffix.lower() == ".dwg":
+                convert_dxf_to_dwg(str(in_dxf_path_for_processing), str(outp), out_version=args.dwg_version)
+            else: # DXF output
+                if in_dxf_path_for_processing != outp:
+                    copyfile(str(in_dxf_path_for_processing), str(outp))
+        
+        print(f"✅ Universal conversion successful. Output: {outp}")
+    except Exception as e:
+        print(f"❌ Error during universal conversion: {e}")
+        traceback.print_exc()
+    finally:
+        # --- Step 3: Clean up temporary directory ---
+        import shutil
+        if 'temp_dir' in locals() and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
-        try:
-            ensure_parent(outp)
-            # Image inputs
-            if in_ext in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]:
-                try:
-                    from .neural_cad_detector import NeuralCADDetector
-                except ImportError as e:
-                    raise RuntimeError("NeuralCADDetector not available. Install requirements-neural.txt") from e
-                detector = NeuralCADDetector(device=args.device)
-                vectorized = detector.vectorize_drawing(inp, scale_mm_per_pixel=args.scale)
-                tmp_vec_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_vec2d.dxf")
-                detector.convert_to_dxf(vectorized, str(tmp_vec_dxf))
-                if args.to_3d:
-                    extrude_to_destination(tmp_vec_dxf)
-                else:
-                    if out_ext == ".dwg":
-                        convert_dxf_to_dwg(str(tmp_vec_dxf), str(outp), out_version=args.dwg_version)
-                    else:
-                        ensure_parent(outp)
-                        copyfile(str(tmp_vec_dxf), str(outp))
-                try:
-                    tmp_vec_dxf.unlink()
-                except Exception:
-                    pass
-                print(f"Wrote: {outp}")
-                return
 
-            # PDF inputs
-            if in_ext == ".pdf":
-                try:
-                    from .neural_cad_detector import NeuralCADDetector
-                    from .pdf_processor import PDFToImageConverter, CADPipeline
-                except ImportError as e:
-                    raise RuntimeError("PDF pipeline dependencies missing. Install requirements-neural.txt and PyMuPDF/pdf2image") from e
-                detector = NeuralCADDetector(device=args.device)
-                pdf_conv = PDFToImageConverter(dpi=args.dpi)
-                pipe = CADPipeline(neural_detector=detector, pdf_converter=pdf_conv)
-                tmp_vec_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_vec2d.dxf")
-                pipe.process_pdf_to_dxf(str(inp), str(tmp_vec_dxf), confidence_threshold=args.confidence, scale_mm_per_pixel=args.scale)
-                if args.to_3d:
-                    extrude_to_destination(tmp_vec_dxf)
-                else:
-                    if out_ext == ".dwg":
-                        convert_dxf_to_dwg(str(tmp_vec_dxf), str(outp), out_version=args.dwg_version)
-                    else:
-                        ensure_parent(outp)
-                        copyfile(str(tmp_vec_dxf), str(outp))
-                try:
-                    tmp_vec_dxf.unlink()
-                except Exception:
-                    pass
-                print(f"Wrote: {outp}")
-                return
+def handle_deep_hybrid(args: argparse.Namespace) -> None:
+    """
+    Handler for the 'deep-hybrid' command.
 
-            # DXF inputs
-            if in_ext == ".dxf":
-                if args.to_3d:
-                    extrude_to_destination(inp)
-                else:
-                    if out_ext == ".dxf":
-                        ensure_parent(outp)
-                        copyfile(str(inp), str(outp))
-                    elif out_ext == ".dwg":
-                        convert_dxf_to_dwg(str(inp), str(outp), out_version=args.dwg_version)
-                    else:
-                        raise RuntimeError("خروجی باید DXF یا DWG باشد")
-                print(f"Wrote: {outp}")
-                return
-
-            # DWG inputs
-            if in_ext == ".dwg":
-                if args.to_3d:
-                    tmp_in_dxf = outp.with_suffix("").with_name(outp.stem + "_tmp_in2d.dxf")
-                    convert_dwg_to_dxf(str(inp), str(tmp_in_dxf), out_version=args.dwg_version)
-                    try:
-                        extrude_to_destination(tmp_in_dxf)
-                    finally:
-                        try:
-                            tmp_in_dxf.unlink()
-                        except Exception:
-                            pass
-                else:
-                    if out_ext == ".dwg":
-                        ensure_parent(outp)
-                        copyfile(str(inp), str(outp))
-                    elif out_ext == ".dxf":
-                        convert_dwg_to_dxf(str(inp), str(outp), out_version=args.dwg_version)
-                    else:
-                        raise RuntimeError("خروجی باید DXF یا DWG باشد")
-                print(f"Wrote: {outp}")
-                return
-
-            raise RuntimeError("فرمت ورودی پشتیبانی نمی‌شود. از PDF/تصویر/DXF/DWG استفاده کنید.")
-        except Exception as e:
-            print(f"❌ Error in universal-convert: {e}")
+    Args:
+        args: The parsed command-line arguments.
+    """
+    try:
+        import torch
+        from .hybrid_vae_vit_diffusion import create_deep_hybrid_converter
+        
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Initializing deep-hybrid model on device: {dev}")
+        
+        converter = create_deep_hybrid_converter(
+            device=dev, 
+            prior_strength=args.prior_strength, 
+            normalize_range=tuple(args.normalize_range), 
+            ddim_steps=int(args.ddim_steps)
+        )
+        
+        res = converter.convert(Path(args.input), Path(args.output))
+        
+        print(f"✅ Deep-hybrid DXF point cloud written to: {res['dxf']}")
+        sidecar_path = Path(args.output).with_suffix('.deep_hybrid.json')
+        _write_json_report(sidecar_path, [res])
+        print(f"📄 Metadata and performance stats saved to: {sidecar_path}")
+    except ImportError as e:
+        print(f"❌ Error: Deep-hybrid dependencies not found. {e}")
+        print("   Please install them with: pip install -r requirements-neural.txt")
+    except Exception as e:
+        print(f"❌ An error occurred in the deep-hybrid pipeline: {e}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

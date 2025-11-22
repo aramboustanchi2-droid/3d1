@@ -1,0 +1,2 @@
+{"timestamp": "2025-11-22T02:28:25.211417", "type": "url_violation", "message": "Unauthorized domain: suspicious-site.com", "metadata": {"url": "https://suspicious-site.com/hack", "domain": "suspicious-site.com"}}
+{"timestamp": "2025-11-22T02:28:25.213416", "type": "content_length_warning", "message": "Content too long: 1500000 chars", "metadata": {"university": "Stanford", "resource": "course", "url": "https://online.stanford.edu/course"}}

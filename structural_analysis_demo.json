@@ -1,0 +1,48 @@
+{
+  "industry_type": "building",
+  "safety_factors": {
+    "stress": 1.5,
+    "deflection": 1.0,
+    "buckling": 1.8
+  },
+  "limits": {
+    "deflection_limit": 0.0033333333333333335,
+    "stress_limit": 0.9,
+    "vibration_limit": 5.0
+  },
+  "results": [
+    {
+      "element_id": "beam_001",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": null,
+      "bending_stress": 134649910.2333932,
+      "shear_stress": 4646840.148698885,
+      "max_stress": 139296750.3820921,
+      "deflection": 0.008414612254667305,
+      "stress_ratio": 0.5885778185158821,
+      "deflection_ratio": 0.4207306127333652,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {}
+    },
+    {
+      "element_id": "column_001",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": 33557046.979865775,
+      "bending_stress": null,
+      "shear_stress": null,
+      "max_stress": null,
+      "deflection": null,
+      "stress_ratio": 0.022190426095684824,
+      "deflection_ratio": null,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {
+        "slenderness_ratio": 26.92895935248348,
+        "buckling_load": 40558031.47353782
+      }
+    }
+  ]
+}

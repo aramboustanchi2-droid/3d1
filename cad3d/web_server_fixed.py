@@ -1,120 +1,121 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Request, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pathlib import Path
 import tempfile
 import shutil
 import traceback
 import os
+import json
 
 # Internal modules
 from .dxf_extrude import extrude_dxf_closed_polylines
 from .dwg_io import convert_dxf_to_dwg, convert_dwg_to_dxf
 
-app = FastAPI(title="CAD 2D→3D Converter", version="1.0")
+BASE_DIR = Path(__file__).parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
 
+app = FastAPI(title="CAD 2D→3D Converter", version="1.1", description="Enhanced UI with dynamic theming")
 
-INDEX_HTML = """
-<!doctype html>
-<html lang="fa" dir="rtl">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>مبدل جامع CAD - تبدیل دوبعدی به سه‌بعدی</title>
-  <style>
-    body{font-family:Tahoma,Arial,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;background:#f5f5f5}
-    .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:1.5rem;box-shadow:0 2px 12px rgba(0,0,0,.06)}
-    h1{font-size:1.5rem;margin:0 0 1rem;color:#333;text-align:center}
-    .subtitle{text-align:center;color:#666;font-size:.9rem;margin-bottom:1.5rem}
-    .info{background:#e7f3ff;border:1px solid #2196F3;padding:1rem;border-radius:8px;margin-bottom:1.5rem;color:#0d47a1}
-    label{display:block;margin:.8rem 0 .3rem;color:#333;font-weight:500}
-    input[type="file"],input[type="number"],select{width:100%;padding:.6rem;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}
-    input[type="checkbox"]{margin-left:.5rem}
-    .actions{margin-top:1.5rem;text-align:center}
-    button{background:#28a745;color:#fff;border:none;padding:.7rem 2rem;border-radius:8px;cursor:pointer;font-size:1rem}
-    button:hover{background:#218838}
-    .help{font-size:.85rem;color:#666;margin-top:1rem;text-align:center}
-    .advanced{background:#f8f9fa;padding:1rem;border-radius:8px;margin-top:1rem}
-    .advanced-toggle{cursor:pointer;color:#007bff;text-align:center;margin-top:1rem}
-  </style>
-  <script>
-    function toggleAdvanced() {
-      const adv = document.getElementById('advanced');
-      adv.style.display = adv.style.display === 'none' ? 'block' : 'none';
-    }
-  </script>
-</head>
-<body>
-  <div class="card">
-    <h1>🏗️ مبدل جامع CAD</h1>
-    <p class="subtitle">تبدیل عکس، PDF، DXF و DWG به فرمت سه‌بعدی</p>
-    <div class="info">
-      ✅ فرمت‌های ورودی: <strong>JPG, PNG, PDF, DXF, DWG</strong><br/>
-      ✅ فرمت‌های خروجی: DXF, DWG (با ODA)
-    </div>
-    <form method="post" action="/convert" enctype="multipart/form-data">
-      <label>📁 فایل ورودی</label>
-      <input type="file" name="file" accept=".jpg,.jpeg,.png,.pdf,.dxf,.dwg" required />
+# Mount static files if directory exists
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-      <label>📤 فرمت خروجی</label>
-      <select name="out_format">
-        <option value="dxf">DXF</option>
-        <option value="dwg">DWG (نیاز به ODA)</option>
-      </select>
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-      <label style="margin-top:1.2rem">
-        <input type="checkbox" name="to_3d" value="yes" checked />
-        اکستروژن سه‌بعدی (بعد از تبدیل)
-      </label>
+_theme_cache: dict | None = None
+_current_theme: str | None = None
+_theme_config_path = BASE_DIR / "theme_config.json"
 
-      <label>📏 ارتفاع اکستروژن (میلی‌متر)</label>
-      <input type="number" step="1" name="height" value="3000" min="1" />
+def _load_theme_config() -> dict:
+    global _theme_cache
+    if _theme_cache is not None:
+        return _theme_cache
+    if not _theme_config_path.exists():
+        # Create a default theme config
+        default = {
+            "default": os.getenv("DEFAULT_AI_THEME", "light"),
+            "themes": [
+                {"name": "light", "title": "روشن", "accent": "blue"},
+                {"name": "dark", "title": "تاریک", "accent": "emerald"},
+                {"name": "solar", "title": "سولار", "accent": "amber"},
+                {"name": "midnight", "title": "نیمه‌شب", "accent": "violet"}
+            ],
+            "accents": ["blue", "emerald", "amber", "violet", "rose", "indigo"]
+        }
+        try:
+            with open(_theme_config_path, 'w', encoding='utf-8') as f:
+                json.dump(default, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        _theme_cache = default
+        return default
+    try:
+        with open(_theme_config_path, 'r', encoding='utf-8') as f:
+            _theme_cache = json.load(f)
+            # Override default from environment if provided
+            env_default = os.getenv("DEFAULT_AI_THEME")
+            if env_default:
+                names = [t["name"] for t in _theme_cache.get("themes", [])]
+                if env_default in names:
+                    _theme_cache["default"] = env_default
+            return _theme_cache
+    except Exception:
+        _theme_cache = {"default": "light", "themes": [], "accents": []}
+        return _theme_cache
 
-      <div class="advanced-toggle" onclick="toggleAdvanced()">⚙️ تنظیمات پیشرفته (کلیک کنید)</div>
-      
-      <div id="advanced" class="advanced" style="display:none">
-        <label>DPI (برای PDF)</label>
-        <input type="number" step="1" name="dpi" value="300" min="72" max="600" />
-        
-        <label>Scale (mm per pixel - برای عکس/PDF)</label>
-        <input type="number" step="0.1" name="scale" value="1.0" min="0.1" />
-        
-        <label>Confidence (برای PDF)</label>
-        <input type="number" step="0.05" name="confidence" value="0.5" min="0" max="1" />
-        
-        <label>DWG Version</label>
-        <select name="dwg_version">
-          <option value="ACAD2018">ACAD2018 (R2018)</option>
-          <option value="ACAD2013">ACAD2013 (R2013)</option>
-          <option value="ACAD2010">ACAD2010 (R2010)</option>
-          <option value="ACAD2007">ACAD2007 (R2007)</option>
-        </select>
-      </div>
-
-      <div class="actions">
-        <button type="submit">🚀 تبدیل و دانلود</button>
-      </div>
-      <p class="help">
-        📌 برای DXF/DWG: LWPOLYLINE بسته لازم است<br/>
-        📌 برای خروجی DWG: ODA File Converter باید نصب باشد<br/>
-          ✅ همه قابلیت‌ها فعال است!
-      </p>
-    </form>
-  </div>
-</body>
-</html>
-"""
-
+def _get_current_theme(request: Request) -> str:
+    global _current_theme
+    if _current_theme is None:
+        cfg = _load_theme_config()
+        _current_theme = cfg.get("default", "light")
+    cookie_theme = request.cookies.get("theme")
+    if cookie_theme:
+        # validate
+        names = [t["name"] for t in _load_theme_config().get("themes", [])]
+        if cookie_theme in names:
+            _current_theme = cookie_theme
+    return _current_theme
 
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return INDEX_HTML
+def index(request: Request):
+    theme_cfg = _load_theme_config()
+    current = _get_current_theme(request)
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "themes": theme_cfg.get("themes", []),
+            "accents": theme_cfg.get("accents", []),
+            "current_theme": current,
+        }
+    )
+
+@app.get("/api/themes")
+def list_themes():
+    cfg = _load_theme_config()
+    return {"current": _current_theme or cfg.get("default", "light"), "themes": cfg.get("themes", []), "accents": cfg.get("accents", [])}
+
+@app.post("/api/themes/select")
+def select_theme(theme: str = Form(...), request: Request = None):
+    cfg = _load_theme_config()
+    names = [t["name"] for t in cfg.get("themes", [])]
+    if theme not in names:
+        return JSONResponse({"error": "Invalid theme"}, status_code=400)
+    global _current_theme
+    _current_theme = theme
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie("theme", theme, max_age=60*60*24*30)
+    return resp
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+  return {"status": "ok", "theme": _current_theme or _load_theme_config().get("default", "light")}
 
 
 @app.post("/convert")
@@ -126,7 +127,12 @@ async def convert(
     dpi: int = Form(300),
     scale: float = Form(1.0),
     confidence: float = Form(0.5),
+    quality: str = Form("standard"),
+    photo_mode: str = Form("off"),
+    ref_width_mm: str = Form(""),  # Changed to str to handle empty string
     dwg_version: str = Form("ACAD2018"),
+    engineering_profile: str = Form("generic"),
+    generate_report: str = Form(None),
 ):
     temp_input = None
     temp_output = None
@@ -137,6 +143,16 @@ async def convert(
     print(f"Out format: {out_format}", flush=True)
     print(f"To 3D: {to_3d}", flush=True)
     print(f"Height: {height}", flush=True)
+    print(f"Engineering Profile: {engineering_profile}", flush=True)
+    print(f"Generate Report: {generate_report}", flush=True)
+    
+    # Parse ref_width_mm from string
+    ref_width_mm_value = None
+    if ref_width_mm and ref_width_mm.strip():
+        try:
+            ref_width_mm_value = float(ref_width_mm)
+        except ValueError:
+            pass  # Ignore invalid values
     
     try:
         # Create temp input file
@@ -167,31 +183,43 @@ async def convert(
         
         # IMAGE to DXF
         if suffix in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]:
-            try:
-                from .neural_cad_detector import NeuralCADDetector
-            except Exception:
-                return JSONResponse({"error": "Neural pipeline not available. Install: pip install -r requirements-neural.txt"}, status_code=400)
-            
-            fd_tmp, temp_intermediate = tempfile.mkstemp(suffix=".dxf", prefix="cad3d_vec_")
-            os.close(fd_tmp)
-            
-            detector = NeuralCADDetector(device="auto")
+          try:
+            from .neural_cad_detector import NeuralCADDetector, DetectorConfig
+            from .photo_rectify import process_photo_to_dxf
+          except Exception:
+            return JSONResponse({"error": "Neural pipeline not available. Install: pip install -r requirements-neural.txt"}, status_code=400)
+
+          fd_tmp, temp_intermediate = tempfile.mkstemp(suffix=".dxf", prefix="cad3d_vec_")
+          os.close(fd_tmp)
+          if photo_mode == "on":
+            # Rectify perspective and optionally auto-scale using reference width
+            _vec, used_scale = process_photo_to_dxf(
+              temp_input,
+              temp_intermediate,
+              reference_width_mm=ref_width_mm_value,
+              quality=quality,
+              fallback_scale_mm_per_pixel=float(scale),
+            )
+          else:
+            cfg = DetectorConfig(quality=quality if quality in ("standard", "high") else "standard")
+            detector = NeuralCADDetector(device="auto", config=cfg)
             vectorized = detector.vectorize_drawing(temp_input, scale_mm_per_pixel=float(scale))
             detector.convert_to_dxf(vectorized, temp_intermediate)
-            dxf_to_process = temp_intermediate
+          dxf_to_process = temp_intermediate
         
         # PDF to DXF
         elif suffix == ".pdf":
             try:
-                from .neural_cad_detector import NeuralCADDetector
+                from .neural_cad_detector import NeuralCADDetector, DetectorConfig
                 from .pdf_processor import PDFToImageConverter, CADPipeline
             except Exception:
                 return JSONResponse({"error": "PDF pipeline not available. Install: pip install -r requirements-neural.txt PyMuPDF pdf2image"}, status_code=400)
-            
+
             fd_tmp, temp_intermediate = tempfile.mkstemp(suffix=".dxf", prefix="cad3d_pdf_")
             os.close(fd_tmp)
-            
-            detector = NeuralCADDetector(device="auto")
+
+            cfg = DetectorConfig(quality=quality if quality in ("standard", "high") else "standard")
+            detector = NeuralCADDetector(device="auto", config=cfg)
             pdf_conv = PDFToImageConverter(dpi=int(dpi))
             pipe = CADPipeline(neural_detector=detector, pdf_converter=pdf_conv)
             pipe.process_pdf_to_dxf(temp_input, temp_intermediate, confidence_threshold=float(confidence), scale_mm_per_pixel=float(scale))
@@ -215,26 +243,61 @@ async def convert(
             return JSONResponse({"error": f"Unsupported input format: {suffix}"}, status_code=400)
         
         # Now we have a DXF file in dxf_to_process
-        # Apply 3D extrusion if requested
+        print(f"DXF to process: {dxf_to_process}", flush=True)
+        
+        # Verify DXF has content before 3D conversion
+        try:
+            import ezdxf
+            test_doc = ezdxf.readfile(dxf_to_process)
+            test_msp = test_doc.modelspace()
+            test_entities = list(test_msp)
+            print(f"DXF contains {len(test_entities)} entities before 3D conversion", flush=True)
+            if len(test_entities) == 0:
+                print("WARNING: Input DXF is empty! Vectorization may have failed.", flush=True)
+        except Exception as e:
+            print(f"Failed to verify DXF: {e}", flush=True)
+        
+        # Apply 3D conversion if requested
+        # TEMPORARILY DISABLED ADVANCED CONVERSION - USE SIMPLE EXTRUSION
+        analysis_report_html = None
+        conversion_report_html = None
+        
         if to_3d:
-            fd_tmp2, temp_extruded = tempfile.mkstemp(suffix=".dxf", prefix="cad3d_3d_")
-            os.close(fd_tmp2)
-            
-            extrude_dxf_closed_polylines(
-                dxf_to_process,
-                temp_extruded,
-                height=float(height),
-                layers=None,
-                arc_segments=12,
-                arc_max_seglen=None,
-                optimize=False,
-                detect_hard_shapes=False,
-                hard_shapes_collector=None,
-                colorize=False,
-                split_by_color=False,
-                color_stats_collector=None,
-            )
-            dxf_to_process = temp_extruded
+            # Always use simple extrusion for now until vectorization is fixed
+            try:
+                print(f"Starting simple 3D extrusion on: {dxf_to_process}", flush=True)
+                fd_tmp2, temp_extruded = tempfile.mkstemp(suffix=".dxf", prefix="cad3d_3d_")
+                os.close(fd_tmp2)
+                
+                extrude_dxf_closed_polylines(
+                    dxf_to_process,
+                    temp_extruded,
+                    height=float(height),
+                    layers=None,
+                    arc_segments=12,
+                    arc_max_seglen=None,
+                    optimize=False,
+                    detect_hard_shapes=False,
+                    hard_shapes_collector=None,
+                    colorize=False,
+                    split_by_color=False,
+                    color_stats_collector=None,
+                )
+                dxf_to_process = temp_extruded
+                print(f"Simple extrusion complete: {temp_extruded}", flush=True)
+                
+                # Verify output
+                import ezdxf
+                verify_doc = ezdxf.readfile(temp_extruded)
+                verify_msp = verify_doc.modelspace()
+                verify_count = len(list(verify_msp))
+                print(f"Extruded DXF contains {verify_count} entities", flush=True)
+                
+            except Exception as e:
+                print(f"Simple extrusion failed: {e}", flush=True)
+                print(f"Traceback: {traceback.format_exc()}", flush=True)
+                # If even simple extrusion fails, keep 2D
+                print("Keeping 2D DXF as output", flush=True)
         
         # Convert to final output format
         if out_format == "dwg":
@@ -249,7 +312,16 @@ async def convert(
             # Output DXF
             shutil.copy2(dxf_to_process, temp_output)
         
-        # Return file
+        # Return file (and optionally report)
+        if generate_report and conversion_report_html:
+            # Save report as HTML alongside output
+            report_path = temp_output + "_report.html"
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(conversion_report_html)
+            
+            # For now, just return the 3D model; user can request report separately
+            # Future: return ZIP with both model and report
+        
         return FileResponse(
             temp_output,
             filename=out_filename,

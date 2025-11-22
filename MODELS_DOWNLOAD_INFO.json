@@ -1,0 +1,22 @@
+{
+  "models": {
+    "midas_small": {
+      "url": "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx",
+      "filename": "midas_v2_small_256.onnx",
+      "size_mb": 12.5,
+      "description": "MiDaS v2.1 Small - Depth estimation (256x256)",
+      "destination": "models"
+    },
+    "example_vit": {
+      "url": "https://huggingface.co/facebook/vit-base-patch16-224/resolve/main/pytorch_model.bin",
+      "filename": "vit_base_pretrained.pth",
+      "size_mb": 330,
+      "description": "Vision Transformer Base (pretrained on ImageNet)",
+      "destination": "trained_models"
+    }
+  },
+  "instructions": {
+    "ar": "برای استفاده از مدل‌ها، فایل‌های زیر را دانلود و در پوشه مربوطه قرار دهید",
+    "en": "To use the models, download the following files and place them in the respective folders"
+  }
+}

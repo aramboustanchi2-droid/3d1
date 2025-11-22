@@ -1,0 +1,30 @@
+{
+  "expressions": [
+    {
+      "target": "window_001.width",
+      "expression": "wall_001.width * 0.3",
+      "type": "formula",
+      "dependencies": [
+        "wall_001",
+        "0"
+      ]
+    },
+    {
+      "target": "door_001.width",
+      "expression": "wall_001.width * 0.2",
+      "type": "formula",
+      "dependencies": [
+        "wall_001",
+        "0"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "element1": "window_001",
+      "element2": "door_001",
+      "type": "distance",
+      "value": 3000
+    }
+  ]
+}

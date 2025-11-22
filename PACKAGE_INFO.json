@@ -1,0 +1,245 @@
+{
+    "project": {
+        "name": "CAD 3D Conversion System",
+        "name_fa": "سیستم تبدیل CAD به 3D",
+        "version": "2.0.0",
+        "description": "Advanced 2D to 3D conversion using Diffusion Models, Vision Transformers, and Neural Networks",
+        "description_fa": "تبدیل پیشرفته 2D به 3D با استفاده از مدل‌های انتشار، Vision Transformer و شبکه‌های عصبی"
+    },
+    "models": {
+        "midas_small": {
+            "name": "MiDaS v2.1 Small",
+            "type": "Depth Estimation",
+            "url": "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx",
+            "filename": "midas_v2_small_256.onnx",
+            "destination": "models/",
+            "size_mb": 12.5,
+            "required": true,
+            "description": "Fast depth estimation for image-to-3D conversion",
+            "description_fa": "تخمین عمق سریع برای تبدیل تصویر به 3D"
+        },
+        "diffusion_pretrained": {
+            "name": "3D Diffusion Model",
+            "type": "3D Generation",
+            "url": "https://example.com/diffusion_cad_pretrained.pth",
+            "filename": "diffusion_best.pth",
+            "destination": "trained_models/diffusion/",
+            "size_mb": 450,
+            "required": false,
+            "description": "Pre-trained 3D diffusion model for CAD conversion",
+            "description_fa": "مدل انتشار 3D پیش‌آموزش‌دیده برای تبدیل CAD",
+            "note": "Train your own or download community models"
+        },
+        "vit_pretrained": {
+            "name": "Vision Transformer CAD",
+            "type": "Feature Extraction",
+            "url": "https://example.com/vit_cad_pretrained.pth",
+            "filename": "vit_best.pth",
+            "destination": "trained_models/",
+            "size_mb": 330,
+            "required": false,
+            "description": "Vision Transformer trained on CAD drawings",
+            "description_fa": "Vision Transformer آموزش‌دیده روی نقشه‌های CAD",
+            "note": "Train your own or use base model"
+        },
+        "vae_pretrained": {
+            "name": "CAD VAE Hybrid",
+            "type": "Latent Compression + Fast 3D",
+            "url": "https://example.com/vae_cad_pretrained.pth",
+            "filename": "vae_best.pth",
+            "destination": "trained_models/vae/",
+            "size_mb": 55,
+            "required": false,
+            "description": "Variational Autoencoder for lightweight CAD 2D->3D generation (points + voxels).",
+            "description_fa": "VAE برای تبدیل سریع و سبک CAD از 2D به 3D (ابرنقطه و وکسل).",
+            "note": "Use as prior for diffusion or fast preview."
+        }
+    },
+    "datasets": {
+        "synthetic_cad": {
+            "name": "Synthetic CAD Dataset",
+            "type": "Training Data",
+            "size_samples": 500,
+            "generation_script": "cad3d.diffusion_trainer.create_synthetic_training_data",
+            "destination": "training_data/diffusion_synthetic/",
+            "description": "Auto-generated synthetic CAD drawings with 3D point clouds",
+            "description_fa": "نقشه‌های CAD سینتتیک با ابرنقطه‌های 3D"
+        }
+    },
+    "dependencies": {
+        "core": {
+            "torch": ">=2.0.0",
+            "torchvision": ">=0.15.0",
+            "ezdxf": ">=1.3.0",
+            "opencv-python": ">=4.8.0",
+            "numpy": ">=1.24.0,<2.0.0",
+            "scipy": ">=1.11.0",
+            "pillow": ">=10.0.0",
+            "matplotlib": ">=3.7.0"
+        },
+        "web": {
+            "fastapi": ">=0.104.0",
+            "uvicorn": ">=0.24.0",
+            "python-multipart": ">=0.0.6",
+            "aiofiles": ">=23.0.0"
+        },
+        "optional": {
+            "onnxruntime": ">=1.16.0",
+            "transformers": ">=4.35.0",
+            "open3d": ">=0.17.0",
+            "torch-geometric": ">=2.4.0",
+            "albumentations": ">=1.3.0"
+        }
+    },
+    "installation": {
+        "quick_install": {
+            "windows": "install_diffusion.bat",
+            "linux": "./install_diffusion.sh",
+            "mac": "./install_diffusion.sh"
+        },
+        "manual_install": [
+            "python -m venv .venv",
+            ".venv\\Scripts\\activate (Windows) or source .venv/bin/activate (Linux/Mac)",
+            "pip install -r requirements_complete.txt",
+            "python setup_diffusion.py",
+            "python download_models.py"
+        ],
+        "verification": [
+            "python -c \"import torch; print('PyTorch:', torch.__version__)\"",
+            "python -c \"from cad3d.diffusion_3d_model import create_diffusion_model; print('✅ OK')\"",
+            "python demo_diffusion.py"
+        ]
+    },
+    "usage": {
+        "quick_start": {
+            "code": [
+                "from cad3d.hybrid_vit_diffusion import create_hybrid_converter",
+                "",
+                "converter = create_hybrid_converter(device='cuda')",
+                "converter.convert_image_to_3d('input.png', 'output.dxf')"
+            ]
+        },
+        "demos": {
+            "diffusion": "python demo_diffusion.py",
+            "vision_transformer": "python demo_vit.py",
+            "vae": "python demo_vae.py",
+            "deep_hybrid": "python -m cad3d.hybrid_vae_vit_diffusion",
+            "complete_system": "python launch_neural_system.py"
+        },
+        "training": {
+            "generate_data": "python -m cad3d.diffusion_trainer",
+            "train_diffusion": "python -c \"from cad3d.diffusion_trainer import *; # See guide\"",
+            "train_vit": "python auto_train_system.py",
+            "train_vae": "python -m cad3d.vae_trainer"
+        },
+        "web_server": {
+            "simple": "python -m uvicorn cad3d.simple_server:app --port 8003",
+            "advanced": "python -m uvicorn cad3d.web_server_fixed:app --port 8002"
+        }
+    },
+    "features": {
+        "diffusion_model": {
+            "enabled": true,
+            "capabilities": [
+                "DDPM sampling (high quality)",
+                "DDIM sampling (fast, 10-50 steps)",
+                "PointNet++ 3D understanding",
+                "CLIP-guided generation",
+                "Continuous learning",
+                "Experience replay"
+            ]
+        },
+        "vision_transformer": {
+            "enabled": true,
+            "capabilities": [
+                "Semantic segmentation (50 classes)",
+                "Height estimation",
+                "Depth prediction",
+                "Material classification (10 types)",
+                "Multi-task learning"
+            ]
+        },
+        "hybrid_system": {
+            "enabled": true,
+            "capabilities": [
+                "ViT + Diffusion fusion",
+                "Semantic-aware 3D generation",
+                "Continuous learning from conversions",
+                "Automatic quality improvement"
+            ]
+        },
+        "vae_model": {
+            "enabled": true,
+            "capabilities": [
+                "Latent compression of 2D CAD",
+                "Fast point cloud + voxel generation",
+                "KL annealing for stable training",
+                "Chamfer + voxel + smoothness losses",
+                "Interpolation in latent space",
+                "Acts as prior for diffusion sampling"
+            ]
+        },
+        "deep_hybrid_system": {
+            "enabled": true,
+            "capabilities": [
+                "Tri-fusion (ViT + VAE latent + Diffusion)",
+                "Prior-initialized DDIM sampling",
+                "Optional 2D image reconstruction regularization",
+                "Faster convergence via structured prior",
+                "Unified conditioning projection",
+                "Configurable prior strength"
+            ]
+        }
+    },
+    "documentation": {
+        "guides": {
+            "installation": "INSTALL_DIFFUSION.md",
+            "diffusion_model": "DIFFUSION_MODEL_GUIDE.md",
+            "vision_transformer": "VISION_TRANSFORMER_GUIDE.md",
+            "project_overview": ".github/copilot-instructions.md"
+        },
+        "examples": {
+            "basic": "demo_diffusion.py",
+            "vit": "demo_vit.py",
+            "quickstart": "quickstart_vit.py"
+        }
+    },
+    "system_requirements": {
+        "minimum": {
+            "os": "Windows 10/11, Linux, macOS",
+            "python": "3.8+",
+            "ram": "8 GB",
+            "storage": "5 GB",
+            "gpu": "Optional (CPU works)"
+        },
+        "recommended": {
+            "os": "Windows 11, Ubuntu 22.04",
+            "python": "3.10+",
+            "ram": "16 GB+",
+            "storage": "20 GB+ SSD",
+            "gpu": "NVIDIA RTX 3060+ (6GB+ VRAM)",
+            "cuda": "11.8 or 12.1"
+        }
+    },
+    "performance": {
+        "conversion_speed": {
+            "cpu": "20-60 seconds per image",
+            "gpu_cuda": "5-15 seconds per image"
+        },
+        "model_sizes": {
+            "diffusion_unet": "~86M parameters",
+            "vision_transformer": "~86M parameters",
+            "total_system": "~172M parameters"
+        },
+        "optimization": {
+            "ddim_sampling": "20x faster than DDPM",
+            "batch_processing": "Multiple images in parallel",
+            "gpu_acceleration": "3-4x faster than CPU"
+        }
+    },
+    "support": {
+        "issues": "Check INSTALL_DIFFUSION.md Troubleshooting section",
+        "training_help": "See DIFFUSION_MODEL_GUIDE.md",
+        "api_reference": "Check individual module docstrings"
+    }
+}

@@ -1,5 +1,115 @@
-ezdxf>=1.1.4
+# CAD 2D to 3D Converter - Complete Requirements
+# نیازمندی‌های کامل سیستم تبدیل CAD
+
+# ============================================
+# CORE REQUIREMENTS (اصلی - ضروری)
+# ============================================
+
+# Deep Learning Framework
+# Install FIRST with appropriate version:
+# CPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# CUDA 11.8: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0
+torchvision>=0.15.0
+
+# CAD File Processing
+ezdxf>=1.3.0
+
+# Computer Vision
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# Scientific Computing
 numpy>=1.24.0
+scipy>=1.11.0
+
+# Image Processing
+pillow>=10.0.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# ============================================
+# WEB SERVER (سرور وب)
+# ============================================
+
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+jinja2>=3.1.2
+
+# ============================================
+# PDF PROCESSING (پردازش PDF)
+# ============================================
+
+PyMuPDF>=1.23.0
+pdf2image>=1.16.3
+
+# ============================================
+# AI MODELS (مدل‌های هوش مصنوعی)
+# ============================================
+
 onnxruntime>=1.17.0
-opencv-python>=4.9.0.80
+
+# ============================================
+# UTILITIES (ابزارها)
+# ============================================
+
+tqdm>=4.65.0
 python-dotenv>=1.0.0
+
+# ============================================
+# EXTERNAL CONNECTORS (اتصالات خارجی)
+# ============================================
+
+# For HTTP requests to external APIs
+requests>=2.31.0
+
+# For web scraping (if needed for dataset ingestion)
+beautifulsoup4>=4.12.0
+
+# For scheduling tasks
+schedule>=1.2.0
+
+# ============================================
+# OPTIONAL: ADVANCED AI CONNECTORS (اختیاری: اتصالات پیشرفته)
+# ============================================
+# Uncomment the ones you need based on which services you're using
+
+# For HuggingFace models and APIs
+# transformers>=4.36.0
+# tokenizers>=0.15.0
+# sentencepiece>=0.1.99
+
+# For offline translation (Argos Translate)
+# argostranslate>=1.9.0
+
+# For advanced NLP tasks
+# sentence-transformers>=2.2.2
+
+# For specific local models
+# accelerate>=0.25.0  # For efficient model loading
+
+# ============================================
+# STREAMLIT DASHBOARD (داشبورد تعاملی)
+# ============================================
+
+streamlit>=1.29.0
+plotly>=5.18.0
+pandas>=2.1.0
+
+# ============================================
+# NOTES
+# ============================================
+
+# Installation order:
+# 1. Install PyTorch first (see commands above)
+# 2. pip install -r requirements.txt
+# 3. python setup_diffusion.py
+
+# System requirements:
+# - Python 3.8+
+# - Windows 10/11, Linux, or macOS
+# - 8GB RAM minimum (16GB recommended)
+# - GPU with 6GB+ VRAM recommended (optional)

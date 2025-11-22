@@ -45,22 +45,37 @@ class CADDataset(Dataset):
     
     def __init__(
         self,
-        annotations_file: str,
-        images_dir: str,
+        annotations_file: str = None,
+        images_dir: str = None,
+        root_dir: str = None,
+        annotation_file: str = None,
         transform=None,
-        target_transform=None
+        target_transform=None,
+        **kwargs
     ):
         """
         Args:
-            annotations_file: مسیر فایل COCO JSON
-            images_dir: مسیر پوشه تصاویر
+            annotations_file: مسیر فایل COCO JSON (قدیمی)
+            images_dir: مسیر پوشه تصاویر (قدیمی)
+            root_dir: مسیر پوشه تصاویر (جدید، سازگار با تست‌ها)
+            annotation_file: مسیر فایل COCO JSON (جدید، سازگار با تست‌ها)
             transform: تبدیلات تصویر
             target_transform: تبدیلات target
         """
+        # سازگاری با هر دو نام (قدیمی و جدید)
+        if annotation_file is not None and annotations_file is None:
+            annotations_file = annotation_file
+        if root_dir is not None and images_dir is None:
+            images_dir = root_dir
+        
+        if annotations_file is None or images_dir is None:
+            raise ValueError("annotations_file/annotation_file and images_dir/root_dir are required")
+        
         with open(annotations_file, 'r') as f:
             self.coco_data = json.load(f)
         
         self.images_dir = Path(images_dir)
+        self.root_dir = Path(images_dir)  # Support both attributes for compatibility
         self.transform = transform
         self.target_transform = target_transform
         
@@ -76,6 +91,11 @@ class CADDataset(Dataset):
         print(f"   Images: {len(self.coco_data['images'])}")
         print(f"   Annotations: {len(self.coco_data['annotations'])}")
         print(f"   Categories: {len(self.coco_data['categories'])}")
+    
+    @property
+    def image_ids(self):
+        """Return list of all image IDs for test compatibility"""
+        return [img['id'] for img in self.coco_data['images']]
     
     def __len__(self):
         return len(self.coco_data['images'])
@@ -132,23 +152,35 @@ class CADDetectionTrainer:
         num_classes: int = 15,
         device: str = "auto",
         learning_rate: float = 0.005,
-        batch_size: int = 4
+        batch_size: int = 4,
+        data_dir: str = None,
+        output_dir: str = None,
+        pretrained: bool = True,
+        num_workers: int = 0,
+        **kwargs
     ):
         """
         Args:
             num_classes: تعداد کلاس‌ها (بدون background)
-            device: 'cpu', 'cuda', or 'auto'
+            device: 'cpu', 'cuda', or 'auto' (یا torch.device)
             learning_rate: نرخ یادگیری
             batch_size: اندازه batch
+            data_dir: مسیر داده (سازگار با تست‌ها)
+            output_dir: مسیر خروجی (سازگار با تست‌ها)
+            pretrained: استفاده از pre-trained model
+            num_workers: تعداد workerهای DataLoader
         """
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch required for training")
         
-        # تعیین device
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # تعیین device (از torch.device هم پشتیبانی)
+        if isinstance(device, str):
+            if device == "auto":
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device(device)
         else:
-            self.device = torch.device(device)
+            self.device = device  # قبلاً torch.device است
         
         print(f"🎓 CAD Detection Trainer")
         print(f"   Device: {self.device}")
@@ -159,6 +191,10 @@ class CADDetectionTrainer:
         self.num_classes = num_classes
         self.lr = learning_rate
         self.batch_size = batch_size
+        self.pretrained = pretrained
+        self.num_workers = num_workers
+        self.data_dir = Path(data_dir) if data_dir else None
+        self.output_dir = Path(output_dir) if output_dir else None
         
         # ساخت مدل
         self.model = self._build_model()
@@ -167,8 +203,8 @@ class CADDetectionTrainer:
     
     def _build_model(self):
         """ساخت مدل Faster R-CNN"""
-        # بارگذاری pre-trained model
-        model = fasterrcnn_resnet50_fpn_v2(pretrained=True)
+        # بارگذاری pre-trained model (یا از صفر)
+        model = fasterrcnn_resnet50_fpn_v2(pretrained=self.pretrained)
         
         # تطبیق تعداد کلاس‌ها
         in_features = model.roi_heads.box_predictor.cls_score.in_features

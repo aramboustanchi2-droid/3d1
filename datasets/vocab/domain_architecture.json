@@ -1,0 +1,40 @@
+[
+    {
+        "term": "پایداری",
+        "category": "معماری",
+        "english": "sustainability",
+        "variants": [
+            "پایداری"
+        ],
+        "weight": 0.92
+    },
+    {
+        "term": "مینیمال",
+        "category": "معماری",
+        "english": "minimalism",
+        "variants": [
+            "مینیمال",
+            "حداقلی"
+        ],
+        "weight": 0.67
+    },
+    {
+        "term": "بیوفیلیک",
+        "category": "معماری",
+        "english": "biophilic",
+        "variants": [
+            "بیوفیلیک"
+        ],
+        "weight": 0.73
+    },
+    {
+        "term": "پوسته دوگانه",
+        "category": "معماری",
+        "english": "double skin facade",
+        "variants": [
+            "پوسته دوگانه",
+            "نمای دولایه"
+        ],
+        "weight": 0.81
+    }
+]

@@ -1,123 +1,140 @@
 """
 Advanced AI Systems Integration for CAD Analysis
-یکپارچه‌سازی سیستم‌های پیشرفته هوش مصنوعی
 
-این ماژول شامل:
-✅ 1. Vision Transformer (ViT) - تحلیل روابط با Attention
-✅ 2. Graph Neural Networks (GNN) - تحلیل ساختار و روابط
-⏳ 3. Diffusion Models - تبدیل 2D→3D با جزئیات بالا
-⏳ 4. Autoencoder/VAE - فشرده‌سازی و بازسازی
-⏳ 5. PointNet/PointNet++ - Point Cloud 3D
-⏳ 6. NeRF - بازسازی 3D از 2D
-⏳ 7. SVM/Random Forest - ML کلاسیک
-⏳ 8. Rule-Based Expert Systems - قوانین مهندسی
+This module provides a unified framework for integrating and orchestrating multiple
+advanced AI systems for comprehensive CAD drawing analysis. It is designed to be
+a high-level orchestrator that can leverage various AI techniques, from Vision
+Transformers for semantic understanding to Graph Neural Networks for structural
+analysis.
 
-استفاده:
-    from cad3d.advanced_ai_systems import UnifiedCADAnalyzer
+Key Components:
+- AIMethod (Enum): Defines a catalog of available AI analysis techniques.
+- UnifiedCADAnalyzer: The core class that loads models, runs analysis pipelines,
+  ensembles results from multiple methods, and exports the final output.
+- Dataclasses: `AIAnalysisConfig`, `AIAnalysisResult`, and `UnifiedAnalysisResult`
+  provide structured data handling for configuration and results.
+
+The system is designed to be modular, allowing new AI methods to be integrated
+by implementing their specific loading and execution logic.
+
+Example Usage:
+    from cad3d.advanced_ai_systems import UnifiedCADAnalyzer, AIMethod, AIAnalysisConfig
+
+    config = AIAnalysisConfig(methods=[AIMethod.VIT, AIMethod.GNN])
+    analyzer = UnifiedCADAnalyzer(config=config)
     
-    analyzer = UnifiedCADAnalyzer()
-    results = analyzer.analyze_drawing(
-        input_path="plan.dxf",
-        methods=['vit', 'gnn', 'pointnet']
-    )
+    unified_result = analyzer.analyze_drawing("path/to/your/plan.dxf")
+    
+    analyzer.export_results(unified_result, "analysis_output.json", format='json')
 """
 
+from __future__ import annotations
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import json
+import logging
+import time
+import csv
 
-# Conditional imports
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+
+# Conditional imports for heavy dependencies
 try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+    logging.warning("PyTorch is not installed. Some AI methods will be unavailable.")
 
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
+    logging.warning("NumPy is not installed. Data processing capabilities will be limited.")
 
 
 class AIMethod(Enum):
-    """روش‌های AI قابل استفاده"""
+    """Enumeration of available AI analysis methods."""
     # Deep Learning (Non-Classical)
-    VIT = "vision_transformer"  # ویژن ترنسفورمر
-    DETR = "detection_transformer"  # DETR
-    SAM = "segment_anything"  # SAM
-    DIFFUSION = "diffusion_model"  # مدل‌های انتشار
-    VAE = "variational_autoencoder"  # VAE
+    VIT = "vision_transformer"
+    DETR = "detection_transformer"
+    SAM = "segment_anything_model"
+    DIFFUSION = "diffusion_model"
+    VAE = "variational_autoencoder"
     
-    # Graph-Based
-    GNN = "graph_neural_network"  # شبکه عصبی گرافی
-    GCN = "graph_convolutional"  # GCN
-    GAT = "graph_attention"  # Graph Attention
+    # Graph-Based Methods
+    GNN = "graph_neural_network"
+    GCN = "graph_convolutional_network"
+    GAT = "graph_attention_network"
     
-    # Classical ML
-    SVM = "support_vector_machine"  # SVM
-    KMEANS = "k_means_clustering"  # K-Means
-    RANDOM_FOREST = "random_forest"  # Random Forest
-    XGBOOST = "xgboost"  # XGBoost
+    # Classical Machine Learning
+    SVM = "support_vector_machine"
+    KMEANS = "k_means_clustering"
+    RANDOM_FOREST = "random_forest"
+    XGBOOST = "xgboost"
     
-    # 3D Processing
-    POINTNET = "pointnet"  # PointNet
-    POINTNET_PLUS = "pointnet_plus_plus"  # PointNet++
-    NERF = "neural_radiance_fields"  # NeRF
-    OCCUPANCY_NET = "occupancy_network"  # Occupancy Networks
+    # 3D Point Cloud Processing
+    POINTNET = "pointnet"
+    POINTNET_PLUS = "pointnet_plus_plus"
     
-    # Geometry & Rules
-    RULE_BASED = "rule_based_expert"  # قوانین مهندسی
-    CONSTRAINT_SOLVER = "constraint_solver"  # حل‌کننده محدودیت
-    COMPUTATIONAL_GEOMETRY = "comp_geometry"  # هندسه محاسباتی
+    # 3D Reconstruction from 2D
+    NERF = "neural_radiance_fields"
+    OCCUPANCY_NET = "occupancy_network"
+    
+    # Rule-Based and Geometric Methods
+    RULE_BASED = "rule_based_expert_system"
+    CONSTRAINT_SOLVER = "constraint_solver"
+    COMPUTATIONAL_GEOMETRY = "computational_geometry"
 
 
 @dataclass
 class AIAnalysisConfig:
-    """تنظیمات تحلیل AI"""
+    """Configuration for the unified AI analysis process."""
     methods: List[AIMethod] = field(default_factory=lambda: [AIMethod.VIT, AIMethod.GNN])
     device: str = 'auto'
     confidence_threshold: float = 0.5
     batch_size: int = 4
-    use_ensemble: bool = True  # ترکیب نتایج چند مدل
-    
-    # تنظیمات خاص هر روش
-    vit_config: Optional[Dict] = None
-    gnn_config: Optional[Dict] = None
-    pointnet_config: Optional[Dict] = None
+    use_ensemble: bool = True  # Flag to combine results from multiple models
+
+    # Method-specific configurations
+    vit_config: Optional[Dict[str, Any]] = None
+    gnn_config: Optional[Dict[str, Any]] = None
+    pointnet_config: Optional[Dict[str, Any]] = None
 
 
 @dataclass
 class AIAnalysisResult:
-    """نتیجه تحلیل AI"""
+    """Structured result from a single AI analysis method."""
     method: AIMethod
     detections: List[Dict[str, Any]]
     confidence_scores: List[float]
     processing_time: float
     metadata: Dict[str, Any]
     
-    # نتایج خاص
-    relationships: Optional[List[Tuple[int, int, str]]] = None  # برای GNN
-    embeddings: Optional[Any] = None  # برای VAE/PointNet
-    point_cloud: Optional[Any] = None  # برای PointNet
-    mesh: Optional[Any] = None  # برای reconstruction
+    # Method-specific results
+    relationships: Optional[List[Tuple[int, int, str]]] = None  # For GNN
+    embeddings: Optional[Any] = None  # For VAE/PointNet
+    point_cloud: Optional[Any] = None  # For PointNet
+    mesh: Optional[Any] = None  # For 3D reconstruction methods
 
 
 @dataclass
 class UnifiedAnalysisResult:
-    """نتیجه ترکیب شده از همه روش‌ها"""
+    """Aggregated and ensembled result from all executed methods."""
     input_path: str
     methods_used: List[AIMethod]
     individual_results: Dict[AIMethod, AIAnalysisResult]
     
-    # نتایج ترکیب شده (ensemble)
+    # Ensembled (combined) results
     final_detections: List[Dict[str, Any]]
     final_relationships: List[Tuple[int, int, str]]
     confidence_map: Dict[str, float]
     
-    # کیفیت و متریک‌ها
+    # Quality metrics and performance
     ensemble_confidence: float
     processing_time_total: float
     accuracy_estimate: Optional[float] = None
@@ -127,125 +144,136 @@ class UnifiedAnalysisResult:
 
 class UnifiedCADAnalyzer:
     """
-    تحلیلگر یکپارچه با استفاده از چندین روش AI
+    A unified analyzer that orchestrates multiple AI methods for CAD analysis.
     """
     
     def __init__(self, config: Optional[AIAnalysisConfig] = None):
         """
+        Initializes the UnifiedCADAnalyzer.
+
         Args:
-            config: تنظیمات تحلیل
+            config: Configuration object for the analysis. If None, defaults are used.
         """
         self.config = config or AIAnalysisConfig()
+        self._determine_device()
         
-        # تعیین device
+        self.models: Dict[AIMethod, Any] = {}
+        self._load_models()
+        
+        logging.info("UnifiedCADAnalyzer initialized successfully.")
+        logging.info(f"  > Device set to: {self.device}")
+        logging.info(f"  > Default methods: {[m.value for m in self.config.methods]}")
+    
+    def _determine_device(self):
+        """Determines the computation device (CPU/GPU) to use."""
         if self.config.device == 'auto':
-            if TORCH_AVAILABLE:
-                self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                self.device = 'cuda'
             else:
                 self.device = 'cpu'
         else:
             self.device = self.config.device
-        
-        # بارگذاری مدل‌ها
-        self.models = {}
-        self._load_models()
-        
-        print(f"✅ UnifiedCADAnalyzer initialized")
-        print(f"   Device: {self.device}")
-        print(f"   Methods: {[m.value for m in self.config.methods]}")
-    
+
     def _load_models(self):
-        """بارگذاری مدل‌های مورد نیاز"""
+        """Loads the AI models required by the configuration."""
+        logging.info("Loading configured AI models...")
         for method in self.config.methods:
-            if method == AIMethod.VIT:
-                self._load_vit_model()
-            elif method == AIMethod.GNN:
-                self._load_gnn_model()
-            elif method == AIMethod.POINTNET:
-                self._load_pointnet_model()
-            elif method == AIMethod.SVM:
-                self._load_svm_model()
-            # ... سایر مدل‌ها
-    
+            try:
+                if method == AIMethod.VIT:
+                    self._load_vit_model()
+                elif method == AIMethod.GNN:
+                    self._load_gnn_model()
+                elif method == AIMethod.POINTNET:
+                    self._load_pointnet_model()
+                elif method == AIMethod.SVM:
+                    self._load_svm_model()
+                # Add other model loaders here
+            except Exception as e:
+                logging.error(f"Failed to load model for method '{method.value}': {e}", exc_info=True)
+
     def _load_vit_model(self):
-        """بارگذاری Vision Transformer"""
+        """Loads the Vision Transformer model."""
         try:
             from .vit_detector import CADViTDetector, ViTConfig
             config = ViTConfig(**(self.config.vit_config or {}))
             self.models[AIMethod.VIT] = CADViTDetector(config=config, device=self.device)
-            print("✅ ViT model loaded")
+            logging.info("Vision Transformer (ViT) model loaded.")
+        except ImportError:
+            logging.warning("Could not load ViT: 'vit_detector' module not found.")
         except Exception as e:
-            print(f"⚠️ Could not load ViT: {e}")
-    
+            raise RuntimeError(f"Error initializing ViT model: {e}")
+
     def _load_gnn_model(self):
-        """بارگذاری Graph Neural Network"""
+        """Loads the Graph Neural Network model and builder."""
         try:
             from .gnn_detector import CADGraphNeuralNetwork, CADGraphBuilder
             if TORCH_AVAILABLE:
                 self.models[AIMethod.GNN] = {
-                    'model': CADGraphNeuralNetwork(),
+                    'model': CADGraphNeuralNetwork().to(self.device),
                     'builder': CADGraphBuilder()
                 }
-                print("✅ GNN model loaded")
+                logging.info("Graph Neural Network (GNN) model loaded.")
+            else:
+                logging.warning("Cannot load GNN model: PyTorch is not available.")
+        except ImportError:
+            logging.warning("Could not load GNN: 'gnn_detector' module not found.")
         except Exception as e:
-            print(f"⚠️ Could not load GNN: {e}")
-    
+            raise RuntimeError(f"Error initializing GNN model: {e}")
+
     def _load_pointnet_model(self):
-        """بارگذاری PointNet"""
-        print("⚠️ PointNet not implemented yet")
+        """Placeholder for loading PointNet model."""
+        logging.warning("PointNet model loading is not yet implemented.")
     
     def _load_svm_model(self):
-        """بارگذاری SVM"""
-        print("⚠️ SVM not implemented yet")
-    
+        """Placeholder for loading SVM model."""
+        logging.warning("SVM model loading is not yet implemented.")
+
     def analyze_drawing(
         self,
         input_path: str,
-        methods: Optional[List[AIMethod]] = None,
-        output_format: str = 'dxf'
+        methods: Optional[List[AIMethod]] = None
     ) -> UnifiedAnalysisResult:
         """
-        تحلیل نقشه با استفاده از چندین روش AI
+        Analyzes a drawing using a pipeline of specified AI methods.
         
         Args:
-            input_path: مسیر فایل ورودی (DXF, DWG, PDF, Image)
-            methods: لیست روش‌ها (None = استفاده از config)
-            output_format: فرمت خروجی ('dxf', 'dwg', '3d', 'json')
+            input_path: Path to the input file (e.g., DXF, DWG, PDF, image).
+            methods: A list of AI methods to use, overriding the default config if provided.
             
         Returns:
-            نتیجه ترکیب شده
+            A UnifiedAnalysisResult object containing aggregated results.
         """
-        import time
         start_time = time.time()
         
-        methods = methods or self.config.methods
-        individual_results = {}
+        active_methods = methods or self.config.methods
+        individual_results: Dict[AIMethod, AIAnalysisResult] = {}
         
-        print(f"\n📊 Analyzing: {input_path}")
-        print(f"   Methods: {[m.value for m in methods]}")
+        logging.info(f"Starting analysis for: {input_path}")
+        logging.info(f"Using methods: {[m.value for m in active_methods]}")
         
-        # اجرای هر روش
-        for method in methods:
-            print(f"\n🔍 Running {method.value}...")
+        for method in active_methods:
+            logging.info(f"Executing method: {method.value}...")
             try:
                 result = self._run_method(method, input_path)
                 individual_results[method] = result
-                print(f"   ✅ {len(result.detections)} detections")
+                logging.info(f"  > Method '{method.value}' completed, found {len(result.detections)} detections.")
             except Exception as e:
-                print(f"   ⚠️ Error: {e}")
+                logging.error(f"  > Error running method '{method.value}': {e}", exc_info=True)
         
-        # ترکیب نتایج (Ensemble)
         if self.config.use_ensemble and len(individual_results) > 1:
+            logging.info("Ensembling results from multiple methods...")
             final_detections, final_relationships = self._ensemble_results(individual_results)
-        else:
-            # استفاده از بهترین نتیجه
-            best_result = list(individual_results.values())[0]
+        elif individual_results:
+            logging.info("Using results from the best available method.")
+            best_result = next(iter(individual_results.values()))
             final_detections = best_result.detections
             final_relationships = best_result.relationships or []
-        
+        else:
+            logging.warning("No analysis methods succeeded. Returning empty result.")
+            final_detections, final_relationships = [], []
+
         total_time = time.time() - start_time
         
-        # ساخت نتیجه نهایی
         result = UnifiedAnalysisResult(
             input_path=input_path,
             methods_used=list(individual_results.keys()),
@@ -256,181 +284,168 @@ class UnifiedCADAnalyzer:
             ensemble_confidence=self._calculate_ensemble_confidence(individual_results),
             processing_time_total=total_time,
             metadata={
-                'num_methods': len(methods),
-                'device': self.device,
-                'total_detections': len(final_detections)
+                'num_methods_succeeded': len(individual_results),
+                'device_used': self.device,
+                'total_final_detections': len(final_detections)
             }
         )
         
-        print(f"\n✅ Analysis complete in {total_time:.2f}s")
-        print(f"   Total detections: {len(final_detections)}")
-        print(f"   Ensemble confidence: {result.ensemble_confidence:.2%}")
+        logging.info(f"Analysis finished in {total_time:.2f} seconds.")
+        logging.info(f"  > Final detections: {len(final_detections)}")
+        logging.info(f"  > Estimated ensemble confidence: {result.ensemble_confidence:.2%}")
         
         return result
-    
+
     def _run_method(self, method: AIMethod, input_path: str) -> AIAnalysisResult:
-        """اجرای یک روش خاص"""
-        import time
-        start_time = time.time()
+        """Executes a specific analysis method."""
+        method_start_time = time.time()
         
         if method == AIMethod.VIT:
-            result = self._run_vit(input_path)
+            analysis_result = self._run_vit(input_path)
         elif method == AIMethod.GNN:
-            result = self._run_gnn(input_path)
+            analysis_result = self._run_gnn(input_path)
         elif method == AIMethod.POINTNET:
-            result = self._run_pointnet(input_path)
+            analysis_result = self._run_pointnet(input_path)
         else:
-            result = AIAnalysisResult(
-                method=method,
-                detections=[],
-                confidence_scores=[],
-                processing_time=0,
-                metadata={'status': 'not_implemented'}
-            )
+            raise NotImplementedError(f"Method '{method.value}' is not implemented.")
         
-        result.processing_time = time.time() - start_time
-        return result
-    
+        analysis_result.processing_time = time.time() - method_start_time
+        return analysis_result
+
     def _run_vit(self, input_path: str) -> AIAnalysisResult:
-        """اجرای Vision Transformer"""
+        """Runs the Vision Transformer pipeline."""
         vit_model = self.models.get(AIMethod.VIT)
         if not vit_model:
-            raise ValueError("ViT model not loaded")
+            raise ValueError("ViT model is not loaded or available.")
         
-        # تبدیل DXF به image (اگر لازم باشد)
         image_path = self._convert_to_image(input_path)
-        
-        # Detection
         detections = vit_model.detect(image_path, threshold=self.config.confidence_threshold)
         
         return AIAnalysisResult(
             method=AIMethod.VIT,
             detections=detections,
-            confidence_scores=[d['confidence'] for d in detections],
-            processing_time=0,  # will be set by caller
-            metadata={'image_path': image_path}
+            confidence_scores=[d.get('confidence', 0.0) for d in detections],
+            processing_time=0,  # Will be set by the caller
+            metadata={'source_image_path': image_path}
         )
-    
+
     def _run_gnn(self, input_path: str) -> AIAnalysisResult:
-        """اجرای Graph Neural Network"""
+        """Runs the Graph Neural Network pipeline."""
         gnn_data = self.models.get(AIMethod.GNN)
         if not gnn_data:
-            raise ValueError("GNN model not loaded")
+            raise ValueError("GNN model is not loaded or available.")
         
-        builder = gnn_data['builder']
-        model = gnn_data['model']
+        builder, model = gnn_data['builder'], gnn_data['model']
         
-        # ساخت گراف
+        logging.info("  > Building graph from DXF...")
         graph = builder.build_graph_from_dxf(input_path)
         
-        # تبدیل به PyTorch
-        if TORCH_AVAILABLE:
-            torch_data = builder.to_torch_data(graph)
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("Cannot run GNN inference without PyTorch.")
             
-            # Inference
-            model.eval()
-            with torch.no_grad():
-                outputs = model(
-                    torch_data['node_features'],
-                    torch_data['adjacency_matrix'],
-                    torch_data['edge_index'],
-                    torch_data['edge_features']
-                )
-            
-            # پردازش نتایج
-            detections = self._process_gnn_outputs(outputs, graph)
-            relationships = self._extract_relationships(outputs, graph)
-        else:
-            detections = []
-            relationships = []
+        torch_data = builder.to_torch_data(graph).to(self.device)
+        
+        logging.info("  > Running GNN inference...")
+        model.eval()
+        with torch.no_grad():
+            outputs = model(
+                torch_data.x,
+                torch_data.edge_index,
+                torch_data.edge_attr
+            )
+        
+        detections = self._process_gnn_outputs(outputs, graph)
+        relationships = self._extract_relationships(outputs, graph)
         
         return AIAnalysisResult(
             method=AIMethod.GNN,
             detections=detections,
-            confidence_scores=[0.9] * len(detections),  # placeholder
-            processing_time=0,
+            confidence_scores=[d.get('confidence', 0.9) for d in detections], # Placeholder
+            processing_time=0, # Will be set by the caller
             relationships=relationships,
-            metadata={'num_nodes': len(graph.nodes), 'num_edges': len(graph.edges)}
+            metadata={'num_nodes': graph.number_of_nodes(), 'num_edges': graph.number_of_edges()}
         )
-    
+
     def _run_pointnet(self, input_path: str) -> AIAnalysisResult:
-        """اجرای PointNet"""
-        # TODO: پیاده‌سازی PointNet
-        return AIAnalysisResult(
-            method=AIMethod.POINTNET,
-            detections=[],
-            confidence_scores=[],
-            processing_time=0,
-            metadata={'status': 'not_implemented'}
-        )
-    
-    def _convert_to_image(self, dxf_path: str) -> str:
-        """تبدیل DXF به Image"""
-        # TODO: رندر DXF به Image
-        return dxf_path
-    
-    def _process_gnn_outputs(self, outputs: Dict, graph: Any) -> List[Dict]:
-        """پردازش خروجی GNN"""
-        # TODO: تبدیل logits به detections
+        """Placeholder for running the PointNet pipeline."""
+        raise NotImplementedError("PointNet analysis is not yet implemented.")
+
+    def _convert_to_image(self, file_path: str) -> str:
+        """Converts a CAD file to a raster image if necessary."""
+        # This is a placeholder. A real implementation would use a library
+        # like ezdxf's drawing addon to render the DXF to a PNG.
+        p = Path(file_path)
+        if p.suffix.lower() in ['.dxf', '.dwg']:
+            logging.warning(f"File conversion from {p.suffix} to image is not implemented. Using placeholder.")
+            # In a real scenario, you would return the path to a newly created image.
+            return file_path # Assuming for now the input can be an image path
+        return file_path
+
+    def _process_gnn_outputs(self, outputs: Any, graph: Any) -> List[Dict]:
+        """Processes raw GNN model outputs into structured detections."""
+        logging.warning("GNN output processing is not fully implemented. Returning empty list.")
+        # Placeholder logic
         return []
-    
-    def _extract_relationships(self, outputs: Dict, graph: Any) -> List[Tuple[int, int, str]]:
-        """استخراج روابط از GNN"""
-        # TODO: استخراج روابط
+
+    def _extract_relationships(self, outputs: Any, graph: Any) -> List[Tuple[int, int, str]]:
+        """Extracts entity relationships from GNN outputs."""
+        logging.warning("GNN relationship extraction is not implemented. Returning empty list.")
+        # Placeholder logic
         return []
-    
+
     def _ensemble_results(
         self,
         results: Dict[AIMethod, AIAnalysisResult]
     ) -> Tuple[List[Dict], List[Tuple]]:
-        """ترکیب نتایج چندین روش"""
-        # ترکیب detections
-        all_detections = []
-        for result in results.values():
-            all_detections.extend(result.detections)
+        """Combines results from multiple methods using techniques like NMS."""
+        all_detections = [det for res in results.values() for det in res.detections]
         
-        # حذف تکراری (NMS - Non-Maximum Suppression)
+        # Apply Non-Maximum Suppression (NMS) to merge overlapping bounding boxes
         final_detections = self._non_max_suppression(all_detections)
         
-        # ترکیب relationships
-        all_relationships = []
-        for result in results.values():
-            if result.relationships:
-                all_relationships.extend(result.relationships)
+        # Combine all unique relationships
+        all_relationships = {rel for res in results.values() if res.relationships for rel in res.relationships}
         
-        return final_detections, all_relationships
-    
+        return final_detections, list(all_relationships)
+
     def _non_max_suppression(self, detections: List[Dict]) -> List[Dict]:
-        """حذف detection های تکراری"""
-        # TODO: پیاده‌سازی NMS
-        return detections
-    
+        """A simple implementation of Non-Maximum Suppression."""
+        # This is a placeholder. A real implementation would be more robust,
+        # considering IoU (Intersection over Union) of bounding boxes.
+        logging.warning("Non-Maximum Suppression (NMS) is using a simplified placeholder implementation.")
+        
+        if not detections:
+            return []
+            
+        # Group by class and select the one with the highest confidence
+        # This is a very basic form of NMS.
+        unique_detections = {}
+        for det in sorted(detections, key=lambda x: x.get('confidence', 0), reverse=True):
+            # A key could be based on class and location to group similar items
+            key = (det.get('class'), tuple(det.get('bbox', [0,0,0,0])[:2]))
+            if key not in unique_detections:
+                unique_detections[key] = det
+                
+        return list(unique_detections.values())
+
     def _calculate_confidence_map(self, detections: List[Dict]) -> Dict[str, float]:
-        """محاسبه نقشه اطمینان"""
-        confidence_map = {}
+        """Calculates a map of the highest confidence for each detected class."""
+        confidence_map: Dict[str, float] = {}
         for det in detections:
             class_name = det.get('class', 'unknown')
             confidence = det.get('confidence', 0.0)
-            if class_name in confidence_map:
-                confidence_map[class_name] = max(confidence_map[class_name], confidence)
-            else:
-                confidence_map[class_name] = confidence
+            confidence_map[class_name] = max(confidence_map.get(class_name, 0.0), confidence)
         return confidence_map
-    
-    def _calculate_ensemble_confidence(self, results: Dict) -> float:
-        """محاسبه اطمینان کلی"""
+
+    def _calculate_ensemble_confidence(self, results: Dict[AIMethod, AIAnalysisResult]) -> float:
+        """Calculates the average confidence across all detections from all methods."""
         if not results:
             return 0.0
         
-        all_confidences = []
-        for result in results.values():
-            all_confidences.extend(result.confidence_scores)
+        all_confidences = [score for res in results.values() for score in res.confidence_scores]
         
-        if not all_confidences:
-            return 0.0
-        
-        return sum(all_confidences) / len(all_confidences)
-    
+        return sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
+
     def export_results(
         self,
         result: UnifiedAnalysisResult,
@@ -438,84 +453,114 @@ class UnifiedCADAnalyzer:
         format: str = 'json'
     ):
         """
-        خروجی نتایج
+        Exports the analysis results to a specified format.
         
         Args:
-            result: نتیجه تحلیل
-            output_path: مسیر خروجی
-            format: 'json', 'dxf', 'dwg', 'csv'
+            result: The UnifiedAnalysisResult object to export.
+            output_path: The path to save the output file.
+            format: The desired output format ('json', 'dxf', 'csv').
         """
-        if format == 'json':
-            self._export_json(result, output_path)
-        elif format == 'dxf':
-            self._export_dxf(result, output_path)
-        elif format == 'csv':
-            self._export_csv(result, output_path)
-    
+        logging.info(f"Exporting results to '{output_path}' in {format.upper()} format...")
+        try:
+            if format == 'json':
+                self._export_json(result, output_path)
+            elif format == 'dxf':
+                self._export_dxf(result, output_path)
+            elif format == 'csv':
+                self._export_csv(result, output_path)
+            else:
+                raise ValueError(f"Unsupported export format: {format}")
+            logging.info(f"Successfully exported results to {output_path}")
+        except Exception as e:
+            logging.error(f"Failed to export results: {e}", exc_info=True)
+
     def _export_json(self, result: UnifiedAnalysisResult, output_path: str):
-        """خروجی JSON"""
+        """Exports the results to a JSON file."""
+        # A custom serializer to handle non-serializable types like Enums
+        class CustomEncoder(json.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, AIMethod):
+                    return o.value
+                if NUMPY_AVAILABLE and isinstance(o, np.ndarray):
+                    return o.tolist()
+                return super().default(o)
+
         data = {
             'input_path': result.input_path,
-            'methods_used': [m.value for m in result.methods_used],
-            'detections': result.final_detections,
-            'relationships': result.final_relationships,
+            'methods_used': result.methods_used,
+            'final_detections': result.final_detections,
+            'final_relationships': result.final_relationships,
             'confidence_map': result.confidence_map,
             'ensemble_confidence': result.ensemble_confidence,
-            'processing_time': result.processing_time_total,
+            'processing_time_total': result.processing_time_total,
             'metadata': result.metadata
         }
         
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        print(f"✅ Results exported to {output_path}")
-    
+            json.dump(data, f, indent=2, ensure_ascii=False, cls=CustomEncoder)
+
     def _export_dxf(self, result: UnifiedAnalysisResult, output_path: str):
-        """خروجی DXF"""
-        # TODO: ساخت DXF از نتایج
-        pass
-    
+        """Exports the results to a DXF file."""
+        raise NotImplementedError("DXF export is not yet implemented.")
+
     def _export_csv(self, result: UnifiedAnalysisResult, output_path: str):
-        """خروجی CSV"""
-        import csv
-        
+        """Exports the detection results to a CSV file."""
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Class', 'Confidence', 'BBox', 'Method'])
+            writer.writerow(['Class', 'Confidence', 'BBox', 'SourceMethod'])
             
             for det in result.final_detections:
+                # Find which method this detection originated from (simplified)
+                source_method = "ensembled"
                 writer.writerow([
-                    det.get('class', ''),
-                    det.get('confidence', 0),
-                    det.get('bbox', ''),
-                    det.get('method', '')
+                    det.get('class', 'unknown'),
+                    det.get('confidence', 0.0),
+                    str(det.get('bbox', [])),
+                    source_method
                 ])
-        
-        print(f"✅ Results exported to {output_path}")
 
 
-# مثال استفاده
 if __name__ == "__main__":
-    print("\n" + "="*70)
-    print("Advanced AI Systems for CAD Analysis")
-    print("="*70)
-    print("\n✅ Available Methods:")
+    # This block serves as a demonstration and a basic test of the module.
+    print("\n" + "="*80)
+    print(" Unified CAD Analyzer Demonstration ".center(80, "="))
+    print("="*80)
+    
+    print("\nAvailable AI Methods:")
     for method in AIMethod:
-        print(f"   - {method.value}")
+        print(f"  - {method.name:<15} ({method.value})")
     
-    print("\n✅ Integration Status:")
-    print("   ✅ Vision Transformer (ViT)")
-    print("   ✅ Graph Neural Networks (GNN)")
-    print("   ⏳ Diffusion Models")
-    print("   ⏳ Autoencoder/VAE")
-    print("   ⏳ PointNet/PointNet++")
-    print("   ⏳ NeRF")
-    print("   ⏳ SVM/Random Forest/XGBoost")
-    print("   ⏳ Rule-Based Expert Systems")
+    print("\nIntegration Status:")
+    print("  [✓] Vision Transformer (ViT) - Loader implemented")
+    print("  [✓] Graph Neural Networks (GNN) - Loader implemented")
+    print("  [✗] Diffusion Models - Not implemented")
+    print("  [✗] VAE/Autoencoders - Not implemented")
+    print("  [✗] PointNet/PointNet++ - Not implemented")
+    print("  [✗] Classical ML (SVM, etc.) - Not implemented")
     
-    print("\n✅ Features:")
-    print("   - Multi-method ensemble analysis")
-    print("   - Confidence-based fusion")
-    print("   - Relationship extraction")
-    print("   - Export to DXF/DWG/JSON")
-    print("="*70)
+    print("\nCore Features:")
+    print("  - Multi-method analysis pipeline")
+    print("  - Configurable model selection and device targeting")
+    print("  - Ensembling of results for improved accuracy")
+    print("  - Structured data for configuration and results")
+    print("  - Export to JSON and CSV formats")
+    print("="*80)
+
+    # Example of initializing and running the analyzer
+    # Note: This will likely show warnings or errors if dependent modules
+    # like vit_detector or gnn_detector are not fully implemented or available.
+    print("\nRunning a test initialization...")
+    try:
+        # Configure to use only implemented loaders for this test
+        test_config = AIAnalysisConfig(methods=[AIMethod.VIT, AIMethod.GNN])
+        analyzer = UnifiedCADAnalyzer(config=test_config)
+        print("\nAnalyzer initialized for the test run.")
+        # In a real scenario, you would call:
+        # results = analyzer.analyze_drawing("path/to/file.dxf")
+        # analyzer.export_results(results, "output.json")
+    except Exception as e:
+        print(f"\nAn error occurred during test initialization: {e}")
+        print("This may be expected if sub-modules are not yet implemented.")
+
+    print("\nDemonstration finished.")
+    print("="*80)

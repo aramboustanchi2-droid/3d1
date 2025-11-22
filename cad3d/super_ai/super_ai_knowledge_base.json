@@ -1,0 +1,127 @@
+{
+  "data_connector": {
+    "connections": {
+      "ai_platforms": [
+        {
+          "name": "OpenAI",
+          "type": "LLM",
+          "status": "active",
+          "url": "https://api.openai.com"
+        },
+        {
+          "name": "Anthropic Claude",
+          "type": "LLM",
+          "status": "active",
+          "url": "https://api.anthropic.com"
+        },
+        {
+          "name": "Google Gemini",
+          "type": "LLM",
+          "status": "active",
+          "url": "https://ai.google.dev"
+        },
+        {
+          "name": "Hugging Face",
+          "type": "Model Hub",
+          "status": "active",
+          "url": "https://huggingface.co"
+        },
+        {
+          "name": "AutoGen",
+          "type": "Agent Framework",
+          "status": "trained",
+          "url": "https://microsoft.github.io/autogen"
+        },
+        {
+          "name": "LangChain",
+          "type": "Agent Framework",
+          "status": "trained",
+          "url": "https://langchain.com"
+        },
+        {
+          "name": "CrewAI",
+          "type": "Agent Framework",
+          "status": "trained",
+          "url": "https://crewai.com"
+        }
+      ],
+      "architectural_databases": [
+        {
+          "name": "ArchDaily",
+          "type": "Architecture Portal",
+          "status": "monitoring",
+          "url": "https://archdaily.com"
+        },
+        {
+          "name": "Dezeen",
+          "type": "Design Magazine",
+          "status": "monitoring",
+          "url": "https://dezeen.com"
+        },
+        {
+          "name": "ArchINFORM",
+          "type": "Architecture Database",
+          "status": "trained",
+          "url": "https://archinform.net"
+        },
+        {
+          "name": "Cadyar",
+          "type": "CAD Resources",
+          "status": "trained",
+          "url": "https://cadyar.com"
+        },
+        {
+          "name": "ArchiExpo",
+          "type": "Product Database",
+          "status": "monitoring",
+          "url": "https://archiexpo.com"
+        }
+      ],
+      "design_repositories": [
+        {
+          "name": "GitHub",
+          "type": "Code Repository",
+          "status": "active",
+          "url": "https://github.com"
+        },
+        {
+          "name": "Behance",
+          "type": "Design Portfolio",
+          "status": "monitoring",
+          "url": "https://behance.net"
+        },
+        {
+          "name": "Dribbble",
+          "type": "Design Community",
+          "status": "monitoring",
+          "url": "https://dribbble.com"
+        }
+      ],
+      "research_sources": [
+        {
+          "name": "arXiv",
+          "type": "Research Papers",
+          "status": "monitoring",
+          "url": "https://arxiv.org"
+        },
+        {
+          "name": "IEEE Xplore",
+          "type": "Technical Papers",
+          "status": "monitoring",
+          "url": "https://ieeexplore.ieee.org"
+        },
+        {
+          "name": "ResearchGate",
+          "type": "Research Network",
+          "status": "monitoring",
+          "url": "https://researchgate.net"
+        }
+      ],
+      "api_services": [],
+      "offline_cache": {}
+    },
+    "connection_status": {},
+    "last_sync_time": {},
+    "last_update": "2025-11-21T14:49:32.782778"
+  }
+}

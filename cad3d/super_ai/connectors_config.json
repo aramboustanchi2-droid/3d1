@@ -1,0 +1,97 @@
+{
+    "google_search": {
+        "enabled": true,
+        "api_key_env": "GOOGLE_API_KEY",
+        "cse_id_env": "GOOGLE_CSE_ID"
+    },
+    "google_translate": {
+        "enabled": true,
+        "api_key_env": "GOOGLE_API_KEY"
+    },
+    "google_ai_studio": {
+        "enabled": true,
+        "api_key_env": "GOOGLE_AI_STUDIO_KEY",
+        "model": "gemini-pro",
+        "note": "Google Gemini via AI Studio"
+    },
+    "microsoft_translator": {
+        "enabled": true,
+        "api_key_env": "AZURE_TRANSLATOR_KEY",
+        "region_env": "AZURE_TRANSLATOR_REGION"
+    },
+    "openai": {
+        "enabled": true,
+        "api_key_env": "OPENAI_API_KEY",
+        "model": "gpt-4o"
+    },
+    "anthropic": {
+        "enabled": true,
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-3-opus-20240229"
+    },
+    "grok": {
+        "enabled": false,
+        "api_key_env": "GROK_API_KEY",
+        "model": "grok-beta"
+    },
+    "deepseek": {
+        "enabled": false,
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "model": "deepseek-chat"
+    },
+    "deepl": {
+        "enabled": true,
+        "api_key_env": "DEEPL_API_KEY"
+    },
+    "amazon_translate": {
+        "enabled": false,
+        "api_key_env": "AWS_ACCESS_KEY_ID",
+        "secret_key_env": "AWS_SECRET_ACCESS_KEY",
+        "region": "us-east-1"
+    },
+    "libre_translate": {
+        "enabled": true,
+        "url": "https://libretranslate.com/translate",
+        "api_key_env": "LIBRETRANSLATE_API_KEY",
+        "note": "Free self-hosted or public API"
+    },
+    "huggingface": {
+        "enabled": true,
+        "api_key_env": "HUGGINGFACE_API_KEY",
+        "models": {
+            "translation": "Helsinki-NLP/opus-mt-en-fa",
+            "chat": "microsoft/DialoGPT-large",
+            "embedding": "sentence-transformers/all-MiniLM-L6-v2"
+        }
+    },
+    "local_models": {
+        "enabled": true,
+        "note": "Local open-source models",
+        "models": {
+            "argos_translate": {
+                "enabled": true,
+                "type": "offline_translation"
+            },
+            "flan_t5": {
+                "enabled": false,
+                "model_name": "google/flan-t5-base",
+                "type": "text_generation"
+            },
+            "mt5": {
+                "enabled": false,
+                "model_name": "google/mt5-base",
+                "type": "multilingual_generation"
+            },
+            "bert": {
+                "enabled": false,
+                "model_name": "bert-base-multilingual-cased",
+                "type": "embedding"
+            },
+            "gemma": {
+                "enabled": false,
+                "model_name": "google/gemma-2b",
+                "type": "text_generation"
+            }
+        }
+    }
+}

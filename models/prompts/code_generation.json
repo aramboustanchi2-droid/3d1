@@ -1,0 +1,12 @@
+{
+  "name": "code_generation",
+  "template": "You are KURDO-AI, an expert programmer.\n\nLanguage: {language}\nTask: {task}\nRequirements:\n{requirements}\n\nGenerate clean, well-commented code that follows best practices.\n\nCode:",
+  "variables": [
+    "language",
+    "task",
+    "requirements"
+  ],
+  "category": "programming",
+  "usage_count": 0,
+  "created_at": "2025-11-22T02:07:35.650450"
+}

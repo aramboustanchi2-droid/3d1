@@ -1,0 +1,71 @@
+{
+  "results": [
+    {
+      "backend": "sqlite",
+      "ok": true,
+      "info": {
+        "models": 3,
+        "model_versions": 2,
+        "datasets": 2,
+        "training_runs": 2,
+        "completed_runs": 1,
+        "experiments": 1,
+        "predictions": 5
+      }
+    },
+    {
+      "backend": "postgresql",
+      "ok": false,
+      "info": "POSTGRES_URL not set"
+    },
+    {
+      "backend": "mysql",
+      "ok": false,
+      "info": "MYSQL_URL not set"
+    },
+    {
+      "backend": "redis",
+      "ok": false,
+      "info": "Error 10061 connecting to localhost:6379. No connection could be made because the target machine actively refused it."
+    },
+    {
+      "backend": "chromadb",
+      "ok": true,
+      "info": {
+        "models": 0,
+        "model_versions": 0,
+        "datasets": 0,
+        "training_runs": 0,
+        "completed_runs": 0,
+        "experiments": 0,
+        "predictions": 0
+      }
+    },
+    {
+      "backend": "faiss",
+      "ok": true,
+      "info": {
+        "models": 0,
+        "model_versions": 0,
+        "datasets": 0,
+        "training_runs": 0,
+        "completed_runs": 0,
+        "experiments": 0,
+        "predictions": 0
+      }
+    },
+    {
+      "backend": "mongodb",
+      "ok": true,
+      "info": {
+        "models": 0,
+        "model_versions": 0,
+        "datasets": 0,
+        "training_runs": 0,
+        "completed_runs": 0,
+        "experiments": 0,
+        "predictions": 0
+      }
+    }
+  ]
+}

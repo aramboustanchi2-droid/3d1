@@ -1,0 +1,24 @@
+# AI Model Database - SQL Backend Dependencies
+# پایگاه داده SQL (PostgreSQL/MySQL) برای مدل‌های هوش مصنوعی
+
+# Core SQLAlchemy ORM
+sqlalchemy>=2.0.0
+
+# PostgreSQL driver
+psycopg2-binary>=2.9.0
+
+# MySQL driver
+pymysql>=1.1.0
+
+# YAML config support
+pyyaml>=6.0
+
+# Optional: async support
+# asyncpg>=0.29.0  # PostgreSQL async
+# aiomysql>=0.2.0  # MySQL async
+
+# Optional: connection pooling
+# psycopg2-pool>=1.0  # PostgreSQL pool
+
+# Optional: migration tools
+# alembic>=1.13.0  # Database migrations

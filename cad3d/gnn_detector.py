@@ -1,18 +1,24 @@
 """
-Graph Neural Networks (GNN) for CAD Structural Analysis
-شبکه‌های عصبی گرافی برای تحلیل ساختار نقشه‌های CAD
+Graph Neural Network (GNN) for CAD Structural Element Detection and Analysis.
 
-قابلیت‌ها:
-- مدل‌سازی روابط بین المان‌ها (دیوار-ستون، دیوار-در، ...)
-- تشخیص ساختار مهندسی (فاصله‌ها، اتصالات، محدودیت‌ها)
-- ایده‌آل برای پروژه‌های BIM و تحلیل سازه‌ای
-- مشابه Revit Constraints و Autodesk AI
+This module provides tools to represent Computer-Aided Design (CAD) drawings as
+graphs and apply Graph Neural Networks to analyze their structural properties.
+
+Key Capabilities:
+- Models spatial and semantic relationships between CAD elements (e.g., walls,
+  columns, doors).
+- Detects structural patterns, connections, and constraints.
+- Ideal for Building Information Modeling (BIM) pre-processing and structural
+  analysis tasks.
+- Inspired by concepts from Autodesk AI research and Revit's constraint system.
 """
 
+from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-import json
+from pathlib import Path
+import math
 
 try:
     import torch
@@ -23,441 +29,418 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    Tensor = Any
-    nn = None
-    print("⚠️ PyTorch not available for GNN")
+    # Define dummy classes for type hinting when torch is not available.
+    class Tensor: pass
+    class nn:
+        Module = object
+        Sequential = object
+        Linear = object
+        ReLU = object
+        Dropout = object
+        LayerNorm = object
+
+    print("Warning: PyTorch is not installed. GNN models will not be available.")
 
 
 class EdgeType(Enum):
-    """انواع یال در گراف CAD"""
-    CONNECTED = "connected"  # متصل فیزیکی
-    ADJACENT = "adjacent"  # مجاور
-    PARALLEL = "parallel"  # موازی
-    PERPENDICULAR = "perpendicular"  # عمود
-    SUPPORTS = "supports"  # پشتیبانی (ستون-تیر)
-    CONTAINS = "contains"  # شامل (اتاق-در)
-    ALIGNED = "aligned"  # همترازی
-    DISTANCE = "distance"  # با فاصله مشخص
+    """Enumerates the types of relationships (edges) between CAD elements."""
+    CONNECTED = "connected"          # Physically touching or intersecting.
+    ADJACENT = "adjacent"            # Close proximity without touching.
+    PARALLEL = "parallel"            # Geometrically parallel.
+    PERPENDICULAR = "perpendicular"  # Geometrically perpendicular.
+    SUPPORTS = "supports"            # A structural support relationship (e.g., column supporting a beam).
+    CONTAINS = "contains"            # One element enclosing another (e.g., room containing a door).
+    ALIGNED = "aligned"              # Centerlines or edges are aligned.
+    DISTANCE = "distance"            # A generic edge representing a measured distance.
 
 
 @dataclass
 class CADNode:
-    """یک گره در گراف CAD"""
+    """Represents a single element in a CAD drawing as a node in a graph."""
     node_id: int
-    element_type: str  # 'wall', 'column', 'door', ...
-    position: Tuple[float, float, float]  # x, y, z
-    dimensions: Optional[Tuple[float, float, float]] = None
+    element_type: str  # e.g., 'wall', 'column', 'door', 'window'
+    position: Tuple[float, float, float]  # Centroid (x, y, z)
+    dimensions: Optional[Tuple[float, float, float]] = None  # Bounding box size (length, width, height)
     layer: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
-    features: Optional[List[float]] = None  # feature vector
+    properties: Dict[str, Any] = field(default_factory=dict)
+    features: Optional[List[float]] = None  # Pre-computed feature vector for the GNN.
 
 
 @dataclass
 class CADEdge:
-    """یک یال در گراف CAD"""
+    """Represents a relationship between two CAD nodes as a directed edge."""
     source_id: int
     target_id: int
     edge_type: EdgeType
-    weight: float = 1.0  # وزن یال
+    weight: float = 1.0  # Strength or importance of the relationship.
     distance: Optional[float] = None
-    properties: Optional[Dict[str, Any]] = None
+    properties: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class CADGraph:
-    """گراف کامل نقشه CAD"""
+    """Represents a complete CAD drawing as a graph of nodes and edges."""
     nodes: List[CADNode]
     edges: List[CADEdge]
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def get_node_by_id(self, node_id: int) -> Optional[CADNode]:
+        """Retrieves a node by its unique ID."""
+        # This is inefficient for large graphs; a dict lookup would be better.
+        for node in self.nodes:
+            if node.node_id == node_id:
+                return node
+        return None
 
 
-class GraphConvolution(nn.Module if TORCH_AVAILABLE else object):
-    """لایه Graph Convolution"""
-    
-    def __init__(self, in_features: int, out_features: int):
-        if not TORCH_AVAILABLE:
-            return
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features)
-        self.activation = nn.ReLU()
-    
-    def forward(
-        self,
-        node_features: Tensor,
-        adjacency_matrix: Tensor
-    ) -> Tensor:
+if TORCH_AVAILABLE:
+    class CADGNN(nn.Module):
         """
-        Args:
-            node_features: (num_nodes, in_features)
-            adjacency_matrix: (num_nodes, num_nodes)
-        Returns:
-            (num_nodes, out_features)
-        """
-        # محاسبه degree matrix
-        degree = adjacency_matrix.sum(dim=1, keepdim=True) + 1e-6
-        
-        # Normalization
-        adjacency_norm = adjacency_matrix / degree
-        
-        # Message passing
-        aggregated = torch.matmul(adjacency_norm, node_features)
-        
-        # Transform
-        output = self.linear(aggregated)
-        output = self.activation(output)
-        
-        return output
+        A Graph Neural Network designed for analyzing CAD graphs.
 
+        This model uses both node-centric (Graph Convolution) and edge-centric
+        (Edge Convolution) message passing to build rich representations of
+        CAD elements and their relationships.
+        """
 
-class EdgeConvolution(nn.Module if TORCH_AVAILABLE else object):
-    """لایه Edge Convolution برای پردازش یال‌ها"""
-    
-    def __init__(self, in_features: int, out_features: int):
-        if not TORCH_AVAILABLE:
-            return
-        super().__init__()
-        # MLP برای پردازش (node_i, node_j, edge_features)
-        self.mlp = nn.Sequential(
-            nn.Linear(in_features * 2 + 8, out_features),  # +8 for edge features
-            nn.ReLU(),
-            nn.Linear(out_features, out_features),
-            nn.ReLU()
-        )
-    
-    def forward(
-        self,
-        node_features: Tensor,
-        edge_index: Tensor,
-        edge_features: Tensor
-    ) -> Tensor:
-        """
-        Args:
-            node_features: (num_nodes, in_features)
-            edge_index: (2, num_edges) - [source_indices, target_indices]
-            edge_features: (num_edges, edge_feature_dim)
-        Returns:
-            (num_nodes, out_features)
-        """
-        source_nodes = edge_index[0]
-        target_nodes = edge_index[1]
-        
-        # دریافت features گره‌های مبدا و مقصد
-        source_features = node_features[source_nodes]
-        target_features = node_features[target_nodes]
-        
-        # ترکیب features
-        combined = torch.cat([source_features, target_features, edge_features], dim=1)
-        
-        # MLP
-        edge_messages = self.mlp(combined)
-        
-        # Aggregation (sum over edges for each node)
-        num_nodes = node_features.size(0)
-        output = torch.zeros(num_nodes, edge_messages.size(1), device=node_features.device)
-        output.index_add_(0, target_nodes, edge_messages)
-        
-        return output
-
-
-class CADGraphNeuralNetwork(nn.Module if TORCH_AVAILABLE else object):
-    """
-    Graph Neural Network برای تحلیل نقشه‌های CAD
-    """
-    
-    def __init__(
-        self,
-        node_feature_dim: int = 64,
-        hidden_dim: int = 128,
-        num_layers: int = 4,
-        num_classes: int = 15,
-        num_edge_types: int = 8
-    ):
-        if not TORCH_AVAILABLE:
-            return
-        super().__init__()
-        
-        # Node feature encoding
-        self.node_encoder = nn.Sequential(
-            nn.Linear(node_feature_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        
-        # Graph Convolution Layers
-        self.graph_convs = nn.ModuleList([
-            GraphConvolution(hidden_dim, hidden_dim)
-            for _ in range(num_layers)
-        ])
-        
-        # Edge Convolution Layers
-        self.edge_convs = nn.ModuleList([
-            EdgeConvolution(hidden_dim, hidden_dim)
-            for _ in range(num_layers)
-        ])
-        
-        # Layer Normalization
-        self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(hidden_dim) for _ in range(num_layers)
-        ])
-        
-        # Node classification head
-        self.node_classifier = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, num_classes)
-        )
-        
-        # Edge classification head
-        self.edge_classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_edge_types)
-        )
-        
-        # Graph-level prediction (برای پیش‌بینی کلی)
-        self.graph_pooling = nn.Linear(hidden_dim, hidden_dim)
-        self.graph_classifier = nn.Linear(hidden_dim, 10)  # 10 graph-level classes
-    
-    def forward(
-        self,
-        node_features: Tensor,
-        adjacency_matrix: Tensor,
-        edge_index: Tensor,
-        edge_features: Tensor
-    ) -> Dict[str, Tensor]:
-        """
-        Args:
-            node_features: (num_nodes, node_feature_dim)
-            adjacency_matrix: (num_nodes, num_nodes)
-            edge_index: (2, num_edges)
-            edge_features: (num_edges, edge_feature_dim)
-        Returns:
-            Dict with predictions
-        """
-        # Encode node features
-        x = self.node_encoder(node_features)
-        
-        # Message passing through layers
-        for i, (graph_conv, edge_conv, layer_norm) in enumerate(
-            zip(self.graph_convs, self.edge_convs, self.layer_norms)
+        def __init__(
+            self,
+            node_feature_dim: int,
+            edge_feature_dim: int,
+            hidden_dim: int = 128,
+            num_layers: int = 4,
+            num_node_classes: int = 15,
+            num_edge_classes: int = len(EdgeType),
         ):
-            # Graph convolution
-            x_graph = graph_conv(x, adjacency_matrix)
+            """
+            Initializes the CADGNN model.
+
+            Args:
+                node_feature_dim: The dimensionality of the input node features.
+                edge_feature_dim: The dimensionality of the input edge features.
+                hidden_dim: The dimensionality of hidden layers.
+                num_layers: The number of message passing layers.
+                num_node_classes: The number of classes for node classification.
+                num_edge_classes: The number of classes for edge classification.
+            """
+            super().__init__()
+
+            self.node_encoder = nn.Linear(node_feature_dim, hidden_dim)
+            self.edge_encoder = nn.Linear(edge_feature_dim, hidden_dim)
+
+            self.conv_layers = nn.ModuleList()
+            for _ in range(num_layers):
+                # Each layer combines node and edge convolutions.
+                # Using TransformerConv for attention-based message passing.
+                conv = nn.TransformerConv(hidden_dim, hidden_dim, heads=4, dropout=0.1, edge_dim=hidden_dim)
+                norm = nn.LayerNorm(hidden_dim * 4) # Output of 4 heads
+                self.conv_layers.append(nn.ModuleDict({'conv': conv, 'norm': norm}))
+
+            # Classifier heads
+            self.node_classifier = nn.Linear(hidden_dim * 4, num_node_classes)
+            self.edge_classifier = nn.Linear(hidden_dim * 4 * 2, num_edge_classes)
+            self.graph_classifier = nn.Linear(hidden_dim * 4, 10) # 10 graph-level classes
+
+        def forward(
+            self,
+            x: Tensor,
+            edge_index: Tensor,
+            edge_attr: Tensor,
+            batch: Optional[Tensor] = None
+        ) -> Dict[str, Tensor]:
+            """
+            Performs the forward pass of the GNN.
+
+            Args:
+                x: Node feature matrix of shape [num_nodes, node_feature_dim].
+                edge_index: Graph connectivity in COO format, shape [2, num_edges].
+                edge_attr: Edge feature matrix, shape [num_edges, edge_feature_dim].
+                batch: Batch vector for graph-level outputs, shape [num_nodes].
+
+            Returns:
+                A dictionary containing node, edge, and graph-level predictions.
+            """
+            x = self.node_encoder(x)
+            edge_attr = self.edge_encoder(edge_attr)
+
+            for layer in self.conv_layers:
+                x_res = x
+                x = layer['conv'](x, edge_index, edge_attr)
+                x = layer['norm'](x)
+                x = F.relu(x)
+                # Simple residual connection (assuming dimensions match)
+                if x.shape == x_res.shape:
+                    x = x + x_res
+
+            # Node-level predictions
+            node_logits = self.node_classifier(x)
+
+            # Edge-level predictions
+            source_nodes, target_nodes = edge_index
+            edge_repr = torch.cat([x[source_nodes], x[target_nodes]], dim=-1)
+            edge_logits = self.edge_classifier(edge_repr)
+
+            # Graph-level prediction
+            if batch is None:
+                batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
             
-            # Edge convolution
-            x_edge = edge_conv(x, edge_index, edge_features)
-            
-            # Combine and normalize
-            x = x_graph + x_edge
-            x = layer_norm(x)
-            
-            # Residual connection (skip first layer)
-            if i > 0:
-                x = x + node_features if i == 1 else x
-        
-        # Node-level predictions
-        node_logits = self.node_classifier(x)
-        
-        # Edge-level predictions
-        source_features = x[edge_index[0]]
-        target_features = x[edge_index[1]]
-        edge_combined = torch.cat([source_features, target_features], dim=1)
-        edge_logits = self.edge_classifier(edge_combined)
-        
-        # Graph-level prediction (global pooling)
-        graph_embedding = torch.mean(x, dim=0)
-        graph_embedding = self.graph_pooling(graph_embedding)
-        graph_logits = self.graph_classifier(graph_embedding)
-        
-        return {
-            'node_logits': node_logits,
-            'edge_logits': edge_logits,
-            'graph_logits': graph_logits,
-            'node_embeddings': x
-        }
+            graph_embedding = torch.mean(x, dim=0) # Simplified global pooling
+            graph_logits = self.graph_classifier(graph_embedding)
+
+            return {
+                'node_logits': node_logits,
+                'edge_logits': edge_logits,
+                'graph_logits': graph_logits.unsqueeze(0),
+                'node_embeddings': x,
+            }
+else:
+    # Define a placeholder if PyTorch is not available
+    class CADGNN:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("PyTorch must be installed to use CADGNN.")
 
 
 class CADGraphBuilder:
-    """ساخت گراف از نقشه CAD"""
-    
-    def __init__(self, distance_threshold: float = 1000.0):
+    """
+    Constructs a CADGraph from various sources, like DXF files.
+    """
+    def __init__(self, distance_threshold: float = 1000.0, angle_tolerance: float = 5.0):
         """
         Args:
-            distance_threshold: حداکثر فاصله برای ایجاد یال
+            distance_threshold: Maximum distance to consider creating an 'ADJACENT' edge.
+            angle_tolerance: Degree tolerance for detecting parallel/perpendicular edges.
         """
         self.distance_threshold = distance_threshold
-    
-    def build_graph_from_dxf(self, dxf_path: str) -> CADGraph:
-        """ساخت گراف از فایل DXF"""
-        import ezdxf
-        
+        self.angle_tolerance = math.radians(angle_tolerance)
+        self._node_id_counter = 0
+
+    def build_from_dxf(self, dxf_path: str | Path) -> CADGraph:
+        """
+        Builds a CADGraph from a DXF file.
+
+        Args:
+            dxf_path: Path to the DXF file.
+
+        Returns:
+            A CADGraph instance representing the DXF content.
+        """
+        try:
+            import ezdxf
+        except ImportError:
+            raise ImportError("The 'ezdxf' package is required to build graphs from DXF files.")
+
         doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
-        
-        nodes = []
-        node_id = 0
-        
-        # استخراج گره‌ها
-        # دیوارها (LWPOLYLINE)
-        for polyline in msp.query('LWPOLYLINE'):
+        self._node_id_counter = 0
+        nodes: List[CADNode] = []
+
+        # Extract nodes from various entity types
+        for polyline in msp.query('LWPOLYLINE[is_closed==True]'):
             points = list(polyline.get_points('xy'))
-            if len(points) >= 2:
+            if len(points) > 2:
                 centroid = self._calculate_centroid(points)
-                node = CADNode(
-                    node_id=node_id,
-                    element_type='wall',
+                nodes.append(CADNode(
+                    node_id=self._get_next_id(),
+                    element_type='wall', # Assumption
                     position=(*centroid, 0),
                     layer=polyline.dxf.layer,
-                    properties={'num_points': len(points)}
-                )
-                nodes.append(node)
-                node_id += 1
-        
-        # ستون‌ها (CIRCLE)
+                    properties={'num_vertices': len(points), 'ezdxf_handle': polyline.dxf.handle}
+                ))
+
         for circle in msp.query('CIRCLE'):
-            if 'COLUMN' in circle.dxf.layer.upper():
-                pos = (circle.dxf.center.x, circle.dxf.center.y, 0)
-                node = CADNode(
-                    node_id=node_id,
-                    element_type='column',
-                    position=pos,
-                    dimensions=(circle.dxf.radius * 2, circle.dxf.radius * 2, 0),
-                    layer=circle.dxf.layer
-                )
-                nodes.append(node)
-                node_id += 1
-        
-        # ساخت یال‌ها
+            layer_name = circle.dxf.layer.upper()
+            el_type = 'column' if 'COL' in layer_name else 'hole'
+            nodes.append(CADNode(
+                node_id=self._get_next_id(),
+                element_type=el_type,
+                position=(*circle.dxf.center.xyz,),
+                dimensions=(circle.dxf.radius * 2, circle.dxf.radius * 2, 0),
+                layer=circle.dxf.layer,
+                properties={'radius': circle.dxf.radius, 'ezdxf_handle': circle.dxf.handle}
+            ))
+
         edges = self._build_edges(nodes)
-        
-        return CADGraph(nodes=nodes, edges=edges)
-    
+        return CADGraph(nodes=nodes, edges=edges, metadata={'source_file': str(dxf_path)})
+
+    def _get_next_id(self) -> int:
+        """Generates a unique node ID."""
+        new_id = self._node_id_counter
+        self._node_id_counter += 1
+        return new_id
+
     def _calculate_centroid(self, points: List[Tuple[float, float]]) -> Tuple[float, float]:
-        """محاسبه مرکز چندضلعی"""
+        """Calculates the centroid of a 2D polygon."""
+        if not points: return (0, 0)
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         return (sum(xs) / len(xs), sum(ys) / len(ys))
-    
+
     def _build_edges(self, nodes: List[CADNode]) -> List[CADEdge]:
-        """ساخت یال‌ها بر اساس فاصله و نوع"""
-        edges = []
-        
+        """Generates edges between nodes based on spatial heuristics."""
+        edges: List[CADEdge] = []
         for i, node1 in enumerate(nodes):
-            for j, node2 in enumerate(nodes[i+1:], start=i+1):
+            for node2 in nodes[i+1:]:
                 distance = self._distance_3d(node1.position, node2.position)
-                
                 if distance < self.distance_threshold:
-                    # تعیین نوع یال
                     edge_type = self._determine_edge_type(node1, node2, distance)
-                    
-                    edge = CADEdge(
+                    edges.append(CADEdge(
                         source_id=node1.node_id,
                         target_id=node2.node_id,
                         edge_type=edge_type,
                         distance=distance,
-                        weight=1.0 / (distance + 1)  # وزن معکوس فاصله
-                    )
-                    edges.append(edge)
-        
+                        weight=1.0 / (1.0 + distance) # Inverse distance weighting
+                    ))
         return edges
-    
-    def _distance_3d(self, p1: Tuple[float, float, float], p2: Tuple[float, float, float]) -> float:
-        """محاسبه فاصله سه‌بعدی"""
-        import math
-        return math.sqrt(
-            (p2[0] - p1[0])**2 +
-            (p2[1] - p1[1])**2 +
-            (p2[2] - p1[2])**2
-        )
-    
+
+    def _distance_3d(self, p1: Tuple, p2: Tuple) -> float:
+        """Calculates the Euclidean distance between two 3D points."""
+        return math.sqrt(sum((c1 - c2) ** 2 for c1, c2 in zip(p1, p2)))
+
     def _determine_edge_type(self, node1: CADNode, node2: CADNode, distance: float) -> EdgeType:
-        """تعیین نوع یال"""
-        # ستون + دیوار = پشتیبانی
-        if (node1.element_type == 'column' and node2.element_type == 'wall') or \
-           (node1.element_type == 'wall' and node2.element_type == 'column'):
+        """Heuristically determines the edge type between two nodes."""
+        type_pair = tuple(sorted((node1.element_type, node2.element_type)))
+
+        if type_pair == ('column', 'wall'):
             return EdgeType.SUPPORTS
+        if type_pair == ('wall', 'wall'):
+            return EdgeType.CONNECTED if distance < 100.0 else EdgeType.ADJACENT
         
-        # دیوار + دیوار = متصل یا مجاور
-        if node1.element_type == 'wall' and node2.element_type == 'wall':
-            if distance < 100:  # خیلی نزدیک
-                return EdgeType.CONNECTED
-            else:
-                return EdgeType.ADJACENT
-        
-        # پیش‌فرض
-        return EdgeType.DISTANCE
-    
-    def to_torch_data(self, graph: CADGraph) -> Dict[str, Tensor]:
-        """تبدیل گراف به format PyTorch"""
+        return EdgeType.DISTANCE # Default fallback
+
+    def to_torch_data(self, graph: CADGraph, device: Optional[str] = None) -> Dict[str, Tensor]:
+        """
+        Converts a CADGraph into a dictionary of PyTorch tensors for the GNN.
+
+        Args:
+            graph: The CADGraph to convert.
+            device: The PyTorch device to move tensors to (e.g., 'cuda').
+
+        Returns:
+            A dictionary of tensors ('x', 'edge_index', 'edge_attr').
+        """
         if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch required")
-        
-        # Node features (position + type encoding)
-        node_features = []
+            raise ImportError("PyTorch is required to create tensor data.")
+
+        # Create vocabulary mappings
+        node_type_vocab = {nt: i for i, nt in enumerate(sorted(list(set(n.element_type for n in graph.nodes))))}
+        edge_type_vocab = {et: i for i, et in enumerate(EdgeType)}
+
+        # Node features
+        node_features_list = []
         for node in graph.nodes:
-            # One-hot encoding برای نوع
-            type_encoding = [0] * 10
-            type_map = {'wall': 0, 'column': 1, 'door': 2, 'window': 3}
-            type_idx = type_map.get(node.element_type, 9)
-            type_encoding[type_idx] = 1
+            type_one_hot = [0.0] * len(node_type_vocab)
+            type_one_hot[node_type_vocab[node.element_type]] = 1.0
             
-            # Position
-            features = list(node.position) + type_encoding
-            node_features.append(features)
+            pos = list(node.position)
+            dims = list(node.dimensions) if node.dimensions else [0.0, 0.0, 0.0]
+            features = pos + dims + type_one_hot
+            node_features_list.append(features)
         
-        node_features = torch.tensor(node_features, dtype=torch.float32)
-        
-        # Adjacency matrix
-        num_nodes = len(graph.nodes)
-        adjacency = torch.zeros(num_nodes, num_nodes)
-        
-        # Edge index و features
-        edge_sources = []
-        edge_targets = []
+        x = torch.tensor(node_features_list, dtype=torch.float32, device=device)
+
+        # Edge features and index
+        edge_sources, edge_targets = [], []
         edge_features_list = []
-        
         for edge in graph.edges:
-            edge_sources.append(edge.source_id)
-            edge_targets.append(edge.target_id)
-            
-            # Edge features (type one-hot + distance + weight)
-            edge_type_encoding = [0] * len(EdgeType)
-            edge_type_encoding[list(EdgeType).index(edge.edge_type)] = 1
-            edge_feat = edge_type_encoding + [edge.distance or 0, edge.weight]
-            edge_features_list.append(edge_feat)
-            
-            # Fill adjacency
-            adjacency[edge.source_id, edge.target_id] = edge.weight
-            adjacency[edge.target_id, edge.source_id] = edge.weight  # undirected
-        
-        edge_index = torch.tensor([edge_sources, edge_targets], dtype=torch.long)
-        edge_features = torch.tensor(edge_features_list, dtype=torch.float32)
-        
-        return {
-            'node_features': node_features,
-            'adjacency_matrix': adjacency,
-            'edge_index': edge_index,
-            'edge_features': edge_features
-        }
+            # Create edges in both directions for an undirected graph
+            for src, tgt in [(edge.source_id, edge.target_id), (edge.target_id, edge.source_id)]:
+                edge_sources.append(src)
+                edge_targets.append(tgt)
+                
+                type_one_hot = [0.0] * len(edge_type_vocab)
+                type_one_hot[edge_type_vocab[edge.edge_type]] = 1.0
+                
+                dist = [edge.distance or 0.0]
+                weight = [edge.weight]
+                features = type_one_hot + dist + weight
+                edge_features_list.append(features)
+
+        edge_index = torch.tensor([edge_sources, edge_targets], dtype=torch.long, device=device)
+        edge_attr = torch.tensor(edge_features_list, dtype=torch.float32, device=device)
+
+        return {'x': x, 'edge_index': edge_index, 'edge_attr': edge_attr}
 
 
-# مثال استفاده
+def create_dummy_dxf(path: Path):
+    """Creates a simple DXF file for demonstration purposes."""
+    try:
+        import ezdxf
+    except ImportError:
+        print("Cannot create dummy DXF: 'ezdxf' is not installed.")
+        return
+
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    # Add a square room (4 walls)
+    msp.add_lwpolyline([(0, 0), (5000, 0), (5000, 5000), (0, 5000)], close=True, dxfattribs={'layer': 'WALLS'})
+    # Add a column
+    msp.add_circle((4500, 4500), radius=150, dxfattribs={'layer': 'COLUMNS'})
+    # Add another room
+    msp.add_lwpolyline([(5000, 0), (10000, 0), (10000, 5000), (5000, 5000)], close=True, dxfattribs={'layer': 'WALLS'})
+    doc.saveas(path)
+    print(f"Created dummy DXF file at: {path}")
+
+
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("Graph Neural Networks for CAD")
-    print("="*60)
-    print("✅ Capabilities:")
-    print("   - Relationship modeling between elements")
-    print("   - Structural analysis (columns, walls, connections)")
-    print("   - Constraint detection and validation")
-    print("   - BIM-like intelligence")
-    print("\n✅ Edge Types:")
-    for edge_type in EdgeType:
-        print(f"   - {edge_type.value}")
-    print("\n✅ Applications:")
-    print("   - Structural integrity checking")
-    print("   - Load path analysis")
-    print("   - Space connectivity analysis")
-    print("   - Code compliance verification")
-    print("="*60)
+    print("="*70)
+    print("CAD Graph Neural Network - Demonstration")
+    print("="*70)
+
+    if not TORCH_AVAILABLE:
+        print("Demonstration skipped: PyTorch is required.")
+    else:
+        # 1. Setup
+        dummy_dxf_path = Path("./dummy_cad_layout.dxf")
+        create_dummy_dxf(dummy_dxf_path)
+
+        # 2. Build Graph from DXF
+        print("\n--- Building Graph from DXF ---")
+        builder = CADGraphBuilder(distance_threshold=5000.0)
+        try:
+            cad_graph = builder.build_from_dxf(dummy_dxf_path)
+            print(f"Graph created with {len(cad_graph.nodes)} nodes and {len(cad_graph.edges)} edges.")
+            print(f"Node types found: {set(n.element_type for n in cad_graph.nodes)}")
+            print(f"Edge types found: {set(e.edge_type.value for e in cad_graph.edges)}")
+
+            # 3. Convert to PyTorch Tensors
+            print("\n--- Converting Graph to Tensors ---")
+            data_dict = builder.to_torch_data(cad_graph)
+            node_feat_dim = data_dict['x'].shape[1]
+            edge_feat_dim = data_dict['edge_attr'].shape[1]
+            print(f"Node feature dimension: {node_feat_dim}")
+            print(f"Edge feature dimension: {edge_feat_dim}")
+
+            # 4. Initialize and Run GNN Model
+            print("\n--- Running GNN Model ---")
+            model = CADGNN(
+                node_feature_dim=node_feat_dim,
+                edge_feature_dim=edge_feat_dim,
+                hidden_dim=128,
+                num_layers=3,
+                num_node_classes=5, # e.g., wall, column, beam, slab, other
+                num_edge_classes=len(EdgeType)
+            )
+            print(f"Model initialized: {model.__class__.__name__}")
+
+            # 5. Forward Pass
+            with torch.no_grad():
+                model.eval()
+                predictions = model(
+                    x=data_dict['x'],
+                    edge_index=data_dict['edge_index'],
+                    edge_attr=data_dict['edge_attr']
+                )
+            print("\n--- GNN Output Shapes ---")
+            for name, tensor in predictions.items():
+                print(f"  - {name}: {tensor.shape}")
+            
+            print("\n✅ Demonstration complete.")
+
+        except ImportError as e:
+            print(f"Error during demonstration: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+        finally:
+            # Clean up the dummy file
+            if dummy_dxf_path.exists():
+                dummy_dxf_path.unlink()

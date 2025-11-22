@@ -1,0 +1,174 @@
+{
+  "industry_type": "building",
+  "safety_factors": {
+    "stress": 1.5,
+    "deflection": 1.0,
+    "buckling": 1.8
+  },
+  "limits": {
+    "deflection_limit": 0.0033333333333333335,
+    "stress_limit": 0.9,
+    "vibration_limit": 5.0
+  },
+  "results": [
+    {
+      "element_id": "column_C1",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": 4832214.765100671,
+      "bending_stress": null,
+      "shear_stress": null,
+      "max_stress": null,
+      "deflection": null,
+      "stress_ratio": 0.0031954213577786144,
+      "deflection_ratio": null,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {
+        "slenderness_ratio": 26.92895935248348,
+        "buckling_load": 40558031.47353782
+      }
+    },
+    {
+      "element_id": "column_C2",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": 4832214.765100671,
+      "bending_stress": null,
+      "shear_stress": null,
+      "max_stress": null,
+      "deflection": null,
+      "stress_ratio": 0.0031954213577786144,
+      "deflection_ratio": null,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {
+        "slenderness_ratio": 26.92895935248348,
+        "buckling_load": 40558031.47353782
+      }
+    },
+    {
+      "element_id": "column_C3",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": 4832214.765100671,
+      "bending_stress": null,
+      "shear_stress": null,
+      "max_stress": null,
+      "deflection": null,
+      "stress_ratio": 0.0031954213577786144,
+      "deflection_ratio": null,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {
+        "slenderness_ratio": 26.92895935248348,
+        "buckling_load": 40558031.47353782
+      }
+    },
+    {
+      "element_id": "column_C4",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": 4832214.765100671,
+      "bending_stress": null,
+      "shear_stress": null,
+      "max_stress": null,
+      "deflection": null,
+      "stress_ratio": 0.0031954213577786144,
+      "deflection_ratio": null,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {
+        "slenderness_ratio": 26.92895935248348,
+        "buckling_load": 40558031.47353782
+      }
+    },
+    {
+      "element_id": "beam_B1",
+      "analysis_type": "static",
+      "is_safe": false,
+      "axial_stress": null,
+      "bending_stress": 229802513464.99103,
+      "shear_stress": 5947955390.334572,
+      "max_stress": 235750468855.3256,
+      "deflection": 25.530556885272055,
+      "stress_ratio": 996.1287416422208,
+      "deflection_ratio": 957.395883197702,
+      "warnings": [],
+      "errors": [
+        "Stress ratio 996.13 > 1.0 (stress exceeds limit)",
+        "Deflection ratio 957.40 > 1.0 (deflection exceeds limit)"
+      ],
+      "additional_data": {}
+    },
+    {
+      "element_id": "beam_B2",
+      "analysis_type": "static",
+      "is_safe": false,
+      "axial_stress": null,
+      "bending_stress": 229802513464.99103,
+      "shear_stress": 5947955390.334572,
+      "max_stress": 235750468855.3256,
+      "deflection": 25.530556885272055,
+      "stress_ratio": 996.1287416422208,
+      "deflection_ratio": 957.395883197702,
+      "warnings": [],
+      "errors": [
+        "Stress ratio 996.13 > 1.0 (stress exceeds limit)",
+        "Deflection ratio 957.40 > 1.0 (deflection exceeds limit)"
+      ],
+      "additional_data": {}
+    },
+    {
+      "element_id": "beam_B3",
+      "analysis_type": "static",
+      "is_safe": false,
+      "axial_stress": null,
+      "bending_stress": 229802513464.99103,
+      "shear_stress": 5947955390.334572,
+      "max_stress": 235750468855.3256,
+      "deflection": 25.530556885272055,
+      "stress_ratio": 996.1287416422208,
+      "deflection_ratio": 957.395883197702,
+      "warnings": [],
+      "errors": [
+        "Stress ratio 996.13 > 1.0 (stress exceeds limit)",
+        "Deflection ratio 957.40 > 1.0 (deflection exceeds limit)"
+      ],
+      "additional_data": {}
+    },
+    {
+      "element_id": "beam_B4",
+      "analysis_type": "static",
+      "is_safe": false,
+      "axial_stress": null,
+      "bending_stress": 229802513464.99103,
+      "shear_stress": 5947955390.334572,
+      "max_stress": 235750468855.3256,
+      "deflection": 25.530556885272055,
+      "stress_ratio": 996.1287416422208,
+      "deflection_ratio": 957.395883197702,
+      "warnings": [],
+      "errors": [
+        "Stress ratio 996.13 > 1.0 (stress exceeds limit)",
+        "Deflection ratio 957.40 > 1.0 (deflection exceeds limit)"
+      ],
+      "additional_data": {}
+    },
+    {
+      "element_id": "slab_001",
+      "analysis_type": "static",
+      "is_safe": true,
+      "axial_stress": null,
+      "bending_stress": 1036799.9999999998,
+      "shear_stress": null,
+      "max_stress": 1036799.9999999998,
+      "deflection": 0.006749999999999998,
+      "stress_ratio": 0.05183999999999999,
+      "deflection_ratio": 0.3374999999999999,
+      "warnings": [],
+      "errors": [],
+      "additional_data": {}
+    }
+  ]
+}
